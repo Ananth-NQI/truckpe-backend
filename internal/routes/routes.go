@@ -2,17 +2,22 @@ package routes
 
 import (
 	"github.com/Ananth-NQI/truckpe-backend/internal/handlers"
+	"github.com/Ananth-NQI/truckpe-backend/internal/services"
 	"github.com/Ananth-NQI/truckpe-backend/internal/storage"
 	"github.com/gofiber/fiber/v2"
 )
 
 // SetupRoutes configures all API routes
 func SetupRoutes(app *fiber.App, store *storage.MemoryStore) {
+	// Initialize services
+	whatsappService := services.NewWhatsAppService(store)
+
 	// Initialize handlers
 	healthHandler := handlers.NewHealthHandler("1.0.0")
 	truckerHandler := handlers.NewTruckerHandler(store)
 	loadHandler := handlers.NewLoadHandler(store)
 	bookingHandler := handlers.NewBookingHandler(store)
+	whatsappHandler := handlers.NewWhatsAppHandler(whatsappService)
 
 	// Root endpoint
 	app.Get("/", func(c *fiber.Ctx) error {
@@ -20,9 +25,10 @@ func SetupRoutes(app *fiber.App, store *storage.MemoryStore) {
 			"message": "Welcome to TruckPe Backend!",
 			"version": "1.0.0",
 			"endpoints": fiber.Map{
-				"health":  "/health",
-				"api":     "/api",
-				"webhook": "/webhook/whatsapp",
+				"health":        "/health",
+				"api":           "/api",
+				"webhook":       "/webhook/whatsapp",
+				"test_whatsapp": "/test/whatsapp",
 			},
 		})
 	})
@@ -50,19 +56,9 @@ func SetupRoutes(app *fiber.App, store *storage.MemoryStore) {
 	bookings.Post("/", bookingHandler.CreateBooking)
 	bookings.Get("/:id", bookingHandler.GetBooking)
 
-	// WhatsApp webhook (placeholder for now)
-	app.Post("/webhook/whatsapp", func(c *fiber.Ctx) error {
-		// Log the webhook data
-		var webhookData map[string]interface{}
-		if err := c.BodyParser(&webhookData); err != nil {
-			return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-				"error": "Invalid webhook data",
-			})
-		}
+	// WhatsApp webhook (for production Twilio)
+	app.Post("/webhook/whatsapp", whatsappHandler.HandleWebhook)
 
-		// For now, just acknowledge
-		return c.JSON(fiber.Map{
-			"status": "received",
-		})
-	})
+	// Test WhatsApp endpoint (for development)
+	app.Post("/test/whatsapp", whatsappHandler.HandleTestWebhook)
 }
