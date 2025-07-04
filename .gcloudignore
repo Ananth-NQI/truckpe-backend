@@ -1,0 +1,9 @@
+.git
+.gitignore
+.env
+.vscode/
+*.md
+.DS_Store
+vendor/
+*.log
+restore-default.yaml

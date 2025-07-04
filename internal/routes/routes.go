@@ -8,7 +8,7 @@ import (
 )
 
 // SetupRoutes configures all API routes
-func SetupRoutes(app *fiber.App, store *storage.MemoryStore) {
+func SetupRoutes(app *fiber.App, store storage.Store) { // Changed from *storage.MemoryStore to interface
 	// Initialize services
 	whatsappService := services.NewWhatsAppService(store)
 
@@ -43,6 +43,7 @@ func SetupRoutes(app *fiber.App, store *storage.MemoryStore) {
 	truckers := api.Group("/truckers")
 	truckers.Post("/register", truckerHandler.Register)
 	truckers.Get("/:id", truckerHandler.GetTrucker)
+	truckers.Get("/", truckerHandler.GetTruckerByPhone) // Query param: ?phone=+919876543210
 
 	// Load routes
 	loads := api.Group("/loads")
@@ -50,11 +51,15 @@ func SetupRoutes(app *fiber.App, store *storage.MemoryStore) {
 	loads.Post("/", loadHandler.CreateLoad)
 	loads.Get("/:id", loadHandler.GetLoad)
 	loads.Post("/search", loadHandler.SearchLoads)
+	loads.Put("/:id/status", loadHandler.UpdateLoadStatus)
 
 	// Booking routes
 	bookings := api.Group("/bookings")
 	bookings.Post("/", bookingHandler.CreateBooking)
 	bookings.Get("/:id", bookingHandler.GetBooking)
+	bookings.Get("/trucker/:truckerID", bookingHandler.GetTruckerBookings)
+	bookings.Get("/load/:loadID", bookingHandler.GetLoadBookings)
+	bookings.Put("/:id/status", bookingHandler.UpdateBookingStatus)
 
 	// WhatsApp webhook (for production Twilio)
 	app.Post("/webhook/whatsapp", whatsappHandler.HandleWebhook)

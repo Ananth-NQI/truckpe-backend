@@ -8,11 +8,11 @@ import (
 
 // TruckerHandler handles trucker-related requests
 type TruckerHandler struct {
-	store *storage.MemoryStore
+	store storage.Store // Changed from *storage.MemoryStore to interface
 }
 
 // NewTruckerHandler creates a new trucker handler
-func NewTruckerHandler(store *storage.MemoryStore) *TruckerHandler {
+func NewTruckerHandler(store storage.Store) *TruckerHandler { // Changed parameter type
 	return &TruckerHandler{
 		store: store,
 	}
@@ -38,6 +38,18 @@ func (h *TruckerHandler) Register(c *fiber.Ctx) error {
 	// Create trucker
 	trucker, err := h.store.CreateTrucker(&reg)
 	if err != nil {
+		// Check for specific errors
+		if err.Error() == "phone number already registered" {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "Phone number already registered",
+			})
+		}
+		if err.Error() == "vehicle already registered" {
+			return c.Status(fiber.StatusConflict).JSON(fiber.Map{
+				"error": "Vehicle already registered",
+			})
+		}
+
 		return c.Status(fiber.StatusInternalServerError).JSON(fiber.Map{
 			"error": "Failed to register trucker",
 		})
@@ -59,6 +71,25 @@ func (h *TruckerHandler) GetTrucker(c *fiber.Ctx) error {
 	}
 
 	trucker, err := h.store.GetTrucker(id)
+	if err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "Trucker not found",
+		})
+	}
+
+	return c.JSON(trucker)
+}
+
+// GetTruckerByPhone retrieves trucker by phone number
+func (h *TruckerHandler) GetTruckerByPhone(c *fiber.Ctx) error {
+	phone := c.Query("phone")
+	if phone == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Phone number is required",
+		})
+	}
+
+	trucker, err := h.store.GetTruckerByPhone(phone)
 	if err != nil {
 		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
 			"error": "Trucker not found",

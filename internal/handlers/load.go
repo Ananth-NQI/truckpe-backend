@@ -8,11 +8,11 @@ import (
 
 // LoadHandler handles load-related requests
 type LoadHandler struct {
-	store *storage.MemoryStore
+	store storage.Store // Changed from *storage.MemoryStore to interface
 }
 
 // NewLoadHandler creates a new load handler
-func NewLoadHandler(store *storage.MemoryStore) *LoadHandler {
+func NewLoadHandler(store storage.Store) *LoadHandler { // Changed parameter type
 	return &LoadHandler{
 		store: store,
 	}
@@ -32,6 +32,18 @@ func (h *LoadHandler) CreateLoad(c *fiber.Ctx) error {
 	if load.FromCity == "" || load.ToCity == "" || load.Material == "" {
 		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
 			"error": "From city, to city, and material are required",
+		})
+	}
+
+	if load.ShipperID == "" || load.ShipperName == "" || load.ShipperPhone == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Shipper details are required",
+		})
+	}
+
+	if load.Weight <= 0 || load.Price <= 0 {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Weight and price must be greater than zero",
 		})
 	}
 
@@ -103,5 +115,49 @@ func (h *LoadHandler) SearchLoads(c *fiber.Ctx) error {
 	return c.JSON(fiber.Map{
 		"results": results,
 		"count":   len(results),
+	})
+}
+
+// UpdateLoadStatus updates the status of a load
+func (h *LoadHandler) UpdateLoadStatus(c *fiber.Ctx) error {
+	id := c.Params("id")
+	if id == "" {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Load ID is required",
+		})
+	}
+
+	var req struct {
+		Status string `json:"status"`
+	}
+
+	if err := c.BodyParser(&req); err != nil {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid request body",
+		})
+	}
+
+	// Validate status
+	validStatuses := map[string]bool{
+		models.LoadStatusAvailable: true,
+		models.LoadStatusBooked:    true,
+		models.LoadStatusInTransit: true,
+		models.LoadStatusDelivered: true,
+	}
+
+	if !validStatuses[req.Status] {
+		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
+			"error": "Invalid status value",
+		})
+	}
+
+	if err := h.store.UpdateLoadStatus(id, req.Status); err != nil {
+		return c.Status(fiber.StatusNotFound).JSON(fiber.Map{
+			"error": "Failed to update load status",
+		})
+	}
+
+	return c.JSON(fiber.Map{
+		"message": "Load status updated successfully",
 	})
 }
