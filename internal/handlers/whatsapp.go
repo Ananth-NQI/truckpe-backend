@@ -4,18 +4,31 @@ import (
 	"log"
 
 	"github.com/Ananth-NQI/truckpe-backend/internal/services"
+	"github.com/Ananth-NQI/truckpe-backend/internal/storage"
 	"github.com/gofiber/fiber/v2"
 )
 
 // WhatsAppHandler handles WhatsApp webhook requests
+// WhatsAppHandler handles WhatsApp webhook requests
 type WhatsAppHandler struct {
+	store           storage.Store
 	whatsappService *services.WhatsAppService
+	twilioService   *services.TwilioService // ADD THIS
 }
 
 // NewWhatsAppHandler creates a new WhatsApp handler
-func NewWhatsAppHandler(whatsappService *services.WhatsAppService) *WhatsAppHandler {
+func NewWhatsAppHandler(store storage.Store) *WhatsAppHandler {
+	// Initialize Twilio service
+	twilioSvc, err := services.NewTwilioService()
+	if err != nil {
+		log.Printf("⚠️  Warning: Twilio service not initialized: %v", err)
+		// Continue without Twilio for testing
+	}
+
 	return &WhatsAppHandler{
-		whatsappService: whatsappService,
+		store:           store,
+		whatsappService: services.NewWhatsAppService(store),
+		twilioService:   twilioSvc,
 	}
 }
 
@@ -36,22 +49,30 @@ func (h *WhatsAppHandler) HandleWebhook(c *fiber.Ctx) error {
 
 	// Process only incoming messages (not status updates)
 	if payload.Body != "" && payload.From != "" {
+		// Remove 'whatsapp:' prefix if present
+		from := payload.From
+		if len(from) > 9 && from[:9] == "whatsapp:" {
+			from = from[9:]
+		}
+
 		// Process the message
-		response, err := h.whatsappService.ProcessMessage(payload.From, payload.Body)
+		response, err := h.whatsappService.ProcessMessage(from, payload.Body)
 		if err != nil {
 			log.Printf("Error processing message: %v", err)
 			response = "❌ Sorry, something went wrong. Please try again."
 		}
 
-		// Log the response (in production, you'd send this back via Twilio API)
-		log.Printf("📤 Response: %s", response)
-
-		// For now, we'll return the response in the webhook response
-		// In production, you'd use Twilio API to send the message
-		return c.JSON(fiber.Map{
-			"message":  "Message processed",
-			"response": response,
-		})
+		// Send the response back via Twilio
+		if h.twilioService != nil && response != "" {
+			err = h.twilioService.SendWhatsAppMessage(from, response)
+			if err != nil {
+				log.Printf("❌ Failed to send WhatsApp response: %v", err)
+			} else {
+				log.Printf("✅ Response sent to %s", from)
+			}
+		} else {
+			log.Printf("📤 Response (not sent - Twilio not configured): %s", response)
+		}
 	}
 
 	// Acknowledge webhook receipt
@@ -87,11 +108,24 @@ func (h *WhatsAppHandler) HandleTestWebhook(c *fiber.Ctx) error {
 		})
 	}
 
+	// ADD THESE LOGS
+	log.Printf("🧪 Test webhook received from %s: %s", payload.From, payload.Message)
+
 	// Process the message
 	response, err := h.whatsappService.ProcessMessage(payload.From, payload.Message)
 	if err != nil {
 		log.Printf("Error processing message: %v", err)
 		response = "❌ Sorry, something went wrong. Please try again."
+	}
+
+	// ADD THIS LOG
+	log.Printf("📤 Test response generated: %s", response)
+
+	// ADD THIS CHECK
+	if h.twilioService != nil {
+		log.Println("✅ Twilio service is initialized")
+	} else {
+		log.Println("⚠️ Twilio service is NOT initialized")
 	}
 
 	return c.JSON(fiber.Map{

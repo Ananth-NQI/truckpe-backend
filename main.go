@@ -151,6 +151,7 @@ func main() {
 	log.Printf("📊 Storage: %s", getStorageType())
 	log.Printf("🌍 Environment: %s", getEnvironment())
 	log.Println("========================================")
+	log.Println("✅ TEST: Logging is working!")
 
 	log.Fatal(app.Listen(":" + port))
 }

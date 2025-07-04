@@ -2,22 +2,19 @@ package routes
 
 import (
 	"github.com/Ananth-NQI/truckpe-backend/internal/handlers"
-	"github.com/Ananth-NQI/truckpe-backend/internal/services"
 	"github.com/Ananth-NQI/truckpe-backend/internal/storage"
 	"github.com/gofiber/fiber/v2"
 )
 
 // SetupRoutes configures all API routes
 func SetupRoutes(app *fiber.App, store storage.Store) { // Changed from *storage.MemoryStore to interface
-	// Initialize services
-	whatsappService := services.NewWhatsAppService(store)
 
 	// Initialize handlers
 	healthHandler := handlers.NewHealthHandler("1.0.0")
 	truckerHandler := handlers.NewTruckerHandler(store)
 	loadHandler := handlers.NewLoadHandler(store)
 	bookingHandler := handlers.NewBookingHandler(store)
-	whatsappHandler := handlers.NewWhatsAppHandler(whatsappService)
+	whatsappHandler := handlers.NewWhatsAppHandler(store)
 
 	// Root endpoint
 	app.Get("/", func(c *fiber.Ctx) error {
