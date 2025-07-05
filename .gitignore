@@ -40,3 +40,4 @@ dist/
 # Binary
 truckpe-backend
 cmd/server/server.env.yaml
+.env.yaml

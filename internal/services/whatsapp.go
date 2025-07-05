@@ -3,6 +3,7 @@ package services
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/Ananth-NQI/truckpe-backend/internal/models"
 	"github.com/Ananth-NQI/truckpe-backend/internal/storage"
@@ -10,11 +11,11 @@ import (
 
 // WhatsAppService handles WhatsApp message processing
 type WhatsAppService struct {
-	store storage.Store // Changed from *storage.MemoryStore to interface
+	store storage.Store
 }
 
 // NewWhatsAppService creates a new WhatsApp service
-func NewWhatsAppService(store storage.Store) *WhatsAppService { // Changed parameter type
+func NewWhatsAppService(store storage.Store) *WhatsAppService {
 	return &WhatsAppService{
 		store: store,
 	}
@@ -33,8 +34,17 @@ func (w *WhatsAppService) ProcessMessage(from, message string) (string, error) {
 	case msg == "HELP" || msg == "HI" || msg == "HELLO":
 		return w.getHelpMessage(), nil
 
+	case strings.HasPrefix(msg, "REGISTER SHIPPER"):
+		return w.handleShipperRegistration(phone, msg)
+
 	case strings.HasPrefix(msg, "REGISTER"):
 		return w.handleRegistration(phone, msg)
+
+	case strings.HasPrefix(msg, "POST"):
+		return w.handlePostLoad(phone, msg)
+
+	case msg == "MY LOADS":
+		return w.handleMyLoads(phone)
 
 	case strings.HasPrefix(msg, "LOAD"):
 		return w.handleLoadSearch(phone, msg)
@@ -45,35 +55,294 @@ func (w *WhatsAppService) ProcessMessage(from, message string) (string, error) {
 	case msg == "STATUS":
 		return w.handleStatus(phone)
 
+	case strings.HasPrefix(msg, "TRACK"):
+		return w.handleTrackBooking(phone, msg)
+
 	default:
 		return "❌ Invalid command. Type HELP to see available commands.", nil
 	}
 }
 
-// Help message
+// Help message - updated to include shipper commands
 func (w *WhatsAppService) getHelpMessage() string {
 	return `🚛 *Welcome to TruckPe!*
 
-Available commands:
-
+*For Truckers:*
 📝 *REGISTER* - Register as a trucker
-Example: REGISTER Rajesh Kumar, TN01AB1234, 32ft, 25
-
-🔍 *LOAD <from> <to>* - Search available loads
-Example: LOAD Delhi Mumbai
-
+🔍 *LOAD <from> <to>* - Search loads
 📦 *BOOK <load_id>* - Book a load
-Example: BOOK LD00001
+📊 *STATUS* - Check your bookings
 
-📊 *STATUS* - Check your current bookings
+*For Shippers:*
+🏭 *REGISTER SHIPPER* - Register as shipper
+📦 *POST* - Post a new load
+📋 *MY LOADS* - View your posted loads
+🔍 *TRACK <booking_id>* - Track a booking
 
-💰 *Instant payment in 48 hours!*
-🔒 *Your money is 100% safe with escrow*
+💰 *48-hour payment guarantee!*
+🔒 *100% safe with escrow*
 
 Type any command to start!`
 }
 
-// Handle registration
+// Handle shipper registration
+func (w *WhatsAppService) handleShipperRegistration(phone, msg string) (string, error) {
+	// Check if already registered as shipper
+	existingShipper, _ := w.store.GetShipperByPhone(phone)
+	if existingShipper != nil {
+		return fmt.Sprintf(`✅ *Already Registered as Shipper!*
+
+*Shipper ID:* %s
+*Company:* %s
+*GST:* %s
+
+You can post loads!
+Type: POST to start posting`,
+			existingShipper.ShipperID, existingShipper.CompanyName, existingShipper.GSTNumber), nil
+	}
+
+	// Check if registered as trucker
+	existingTrucker, _ := w.store.GetTruckerByPhone(phone)
+	if existingTrucker != nil {
+		return "❌ This number is registered as a trucker. Use a different number for shipper account.", nil
+	}
+
+	// Parse registration message
+	// Format: REGISTER SHIPPER CompanyName, GSTNumber
+	msg = strings.TrimPrefix(msg, "REGISTER SHIPPER")
+	parts := strings.Split(msg, ",")
+	if len(parts) < 2 {
+		return `❌ Invalid format!
+
+Correct format:
+REGISTER SHIPPER CompanyName, GSTNumber
+
+Example:
+REGISTER SHIPPER ABC Industries, 29ABCDE1234F1Z5`, nil
+	}
+
+	companyName := strings.TrimSpace(parts[0])
+	gstNumber := strings.TrimSpace(strings.ToUpper(parts[1]))
+
+	// Basic GST validation (15 characters)
+	if len(gstNumber) != 15 {
+		return "❌ Invalid GST number! GST should be 15 characters.\n\nExample: 29ABCDE1234F1Z5", nil
+	}
+
+	// Create shipper
+	shipper := &models.Shipper{
+		CompanyName: companyName,
+		GSTNumber:   gstNumber,
+		Phone:       phone,
+	}
+
+	createdShipper, err := w.store.CreateShipper(shipper)
+	if err != nil {
+		if strings.Contains(err.Error(), "phone") {
+			return "❌ This phone number is already registered!", nil
+		}
+		if strings.Contains(err.Error(), "GST") {
+			return "❌ This GST number is already registered!", nil
+		}
+		return "❌ Registration failed. Please try again.", err
+	}
+
+	return fmt.Sprintf(`✅ *Shipper Registration Successful!*
+
+*Shipper ID:* %s
+*Company:* %s
+*GST:* %s
+
+✨ You can now post loads!
+
+Type POST to start posting loads.`,
+		createdShipper.ShipperID, createdShipper.CompanyName, createdShipper.GSTNumber), nil
+}
+
+// Handle post load - guided flow
+func (w *WhatsAppService) handlePostLoad(phone, msg string) (string, error) {
+	// Check if registered as shipper
+	shipper, err := w.store.GetShipperByPhone(phone)
+	if err != nil {
+		return "❌ Please register as shipper first!\n\nType: REGISTER SHIPPER CompanyName, GSTNumber", nil
+	}
+
+	// For now, simple format. Later we'll add guided flow with sessions
+	if msg == "POST" || msg == "POST LOAD" {
+		return `📦 *Post New Load*
+
+Please provide load details in this format:
+
+POST <From> <To> <Material> <Weight> <Price>
+
+Example:
+POST Chennai Bangalore Electronics 15 35000
+
+Or type each detail:
+From City: ?`, nil
+	}
+
+	// Parse POST command
+	parts := strings.Fields(msg)
+	if len(parts) < 6 {
+		return `❌ Incomplete details!
+
+Format: POST <From> <To> <Material> <Weight> <Price>
+
+Example: POST Chennai Bangalore Electronics 15 35000`, nil
+	}
+
+	// Extract details (convert cities to proper case for display)
+	fromCity := strings.Title(strings.ToLower(parts[1]))
+	toCity := strings.Title(strings.ToLower(parts[2]))
+	material := strings.Title(strings.ToLower(parts[3]))
+
+	var weight float64
+	var price float64
+	fmt.Sscanf(parts[4], "%f", &weight)
+	fmt.Sscanf(parts[5], "%f", &price)
+
+	// Create load
+	load := &models.Load{
+		ShipperID:    shipper.ShipperID,
+		ShipperName:  shipper.CompanyName,
+		ShipperPhone: shipper.Phone,
+		FromCity:     fromCity,
+		ToCity:       toCity,
+		Material:     material,
+		Weight:       weight,
+		Price:        price,
+		VehicleType:  "Any",                          // Default
+		LoadingDate:  time.Now().Add(24 * time.Hour), // Tomorrow
+		Status:       "available",
+	}
+
+	createdLoad, err := w.store.CreateLoad(load)
+	if err != nil {
+		return "❌ Failed to post load. Please try again.", err
+	}
+
+	// Update shipper's total loads count
+	shipper.TotalLoads++
+
+	return fmt.Sprintf(`✅ *Load Posted Successfully!*
+
+*Load ID:* %s
+📍 *Route:* %s → %s
+📦 *Material:* %s
+⚖️ *Weight:* %.1f tons
+💰 *Price:* ₹%.0f
+
+🔔 Notifying nearby truckers...
+
+Type MY LOADS to see all your loads.`,
+		createdLoad.LoadID, createdLoad.FromCity, createdLoad.ToCity,
+		createdLoad.Material, createdLoad.Weight, createdLoad.Price), nil
+}
+
+// Handle my loads for shippers
+func (w *WhatsAppService) handleMyLoads(phone string) (string, error) {
+	// Check if shipper
+	shipper, err := w.store.GetShipperByPhone(phone)
+	if err != nil {
+		return "❌ Please register as shipper first!\n\nType: REGISTER SHIPPER CompanyName, GSTNumber", nil
+	}
+
+	// Get loads
+	loads, err := w.store.GetLoadsByShipper(shipper.ShipperID)
+	if err != nil {
+		return "❌ Error fetching loads. Please try again.", err
+	}
+
+	if len(loads) == 0 {
+		return "📋 *Your Loads*\n\nNo loads posted yet.\n\nType POST to create a new load.", nil
+	}
+
+	// Format response
+	response := fmt.Sprintf("📋 *Your Posted Loads*\n🏭 %s\n\n", shipper.CompanyName)
+
+	for i, load := range loads {
+		if i > 4 { // Limit display
+			response += fmt.Sprintf("\n... and %d more loads", len(loads)-5)
+			break
+		}
+
+		statusEmoji := "🟢" // available
+		if load.Status == "booked" {
+			statusEmoji = "🟡"
+		} else if load.Status == "completed" {
+			statusEmoji = "✅"
+		}
+
+		response += fmt.Sprintf(`%s *Load:* %s
+📍 *Route:* %s → %s
+💰 *Price:* ₹%.0f
+📊 *Status:* %s
+
+`, statusEmoji, load.LoadID, load.FromCity, load.ToCity,
+			load.Price, load.Status)
+	}
+
+	response += "Type TRACK <LoadID> to see booking details."
+	return response, nil
+}
+
+// Handle track booking for shippers
+func (w *WhatsAppService) handleTrackBooking(phone, msg string) (string, error) {
+	// Can be used by both shippers and truckers
+	parts := strings.Fields(msg)
+	if len(parts) < 2 {
+		return "❌ Please specify Booking or Load ID\n\nExample: TRACK BK00001 or TRACK LD00001", nil
+	}
+
+	trackID := parts[1]
+
+	// Check if it's a booking ID
+	if strings.HasPrefix(trackID, "BK") {
+		booking, err := w.store.GetBooking(trackID)
+		if err != nil {
+			return "❌ Booking not found. Please check the ID.", nil
+		}
+
+		// Get load details
+		load, _ := w.store.GetLoad(booking.LoadID)
+
+		return fmt.Sprintf(`📍 *Tracking Details*
+
+*Booking ID:* %s
+*Route:* %s → %s
+*Status:* %s
+*Trucker:* %s
+*Amount:* ₹%.0f
+
+Last Update: Just now`,
+			booking.BookingID, load.FromCity, load.ToCity,
+			booking.Status, booking.TruckerID, booking.AgreedPrice), nil
+	}
+
+	// If it's a load ID, show bookings for that load
+	if strings.HasPrefix(trackID, "LD") {
+		bookings, err := w.store.GetBookingsByLoad(trackID)
+		if err != nil || len(bookings) == 0 {
+			return "❌ No bookings found for this load.", nil
+		}
+
+		booking := bookings[0] // Latest booking
+		return fmt.Sprintf(`📍 *Load Tracking*
+
+*Load ID:* %s
+*Booking ID:* %s
+*Status:* %s
+*Trucker:* %s
+
+Type STATUS for more details.`,
+			trackID, booking.BookingID, booking.Status, booking.TruckerID), nil
+	}
+
+	return "❌ Invalid ID format. Use booking ID (BK00001) or load ID (LD00001).", nil
+}
+
+// Handle trucker registration (existing code)
 func (w *WhatsAppService) handleRegistration(phone, msg string) (string, error) {
 	// Check if already registered
 	existingTrucker, _ := w.store.GetTruckerByPhone(phone)
@@ -87,6 +356,12 @@ func (w *WhatsAppService) handleRegistration(phone, msg string) (string, error) 
 You can search for loads!
 Type: LOAD <from> <to>`,
 			existingTrucker.TruckerID, existingTrucker.Name, existingTrucker.VehicleNo), nil
+	}
+
+	// Check if registered as shipper
+	existingShipper, _ := w.store.GetShipperByPhone(phone)
+	if existingShipper != nil {
+		return "❌ This number is registered as a shipper. Use a different number for trucker account.", nil
 	}
 
 	// Parse registration message
@@ -140,7 +415,7 @@ Example: LOAD Delhi Mumbai`,
 		trucker.VehicleType, trucker.Capacity), nil
 }
 
-// Handle load search
+// Handle load search (existing code)
 func (w *WhatsAppService) handleLoadSearch(phone, msg string) (string, error) {
 	// Check if trucker is registered
 	trucker, err := w.store.GetTruckerByPhone(phone)
@@ -199,7 +474,7 @@ func (w *WhatsAppService) handleLoadSearch(phone, msg string) (string, error) {
 	return response, nil
 }
 
-// Handle booking
+// Handle booking (existing code)
 func (w *WhatsAppService) handleBooking(phone, msg string) (string, error) {
 	// Check if trucker is registered
 	trucker, err := w.store.GetTruckerByPhone(phone)
@@ -253,7 +528,7 @@ Type STATUS to check your bookings.`,
 		load.Material, booking.AgreedPrice, booking.NetAmount, booking.OTP), nil
 }
 
-// Handle status check
+// Handle status check (existing code)
 func (w *WhatsAppService) handleStatus(phone string) (string, error) {
 	// Check if trucker is registered
 	trucker, err := w.store.GetTruckerByPhone(phone)

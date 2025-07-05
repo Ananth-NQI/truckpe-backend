@@ -22,4 +22,11 @@ type Store interface {
 	GetBookingsByTrucker(truckerID string) ([]*models.Booking, error)
 	GetBookingsByLoad(loadID string) ([]*models.Booking, error)
 	UpdateBookingStatus(id string, status string) error
+
+	// SHIPPER OPERATIONS:
+	CreateShipper(shipper *models.Shipper) (*models.Shipper, error)
+	GetShipper(id string) (*models.Shipper, error)
+	GetShipperByPhone(phone string) (*models.Shipper, error)
+	GetShipperByGST(gst string) (*models.Shipper, error)
+	GetLoadsByShipper(shipperID string) ([]*models.Load, error)
 }

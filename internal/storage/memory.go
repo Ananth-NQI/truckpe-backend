@@ -2,6 +2,7 @@ package storage
 
 import (
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -11,9 +12,11 @@ import (
 
 // MemoryStore holds all data in memory for MVP
 type MemoryStore struct {
+	mu       sync.RWMutex
 	truckers map[uint]*models.Trucker // Changed from string to uint
 	loads    map[uint]*models.Load    // Changed from string to uint
 	bookings map[uint]*models.Booking // Changed from string to uint
+	shippers map[string]*models.Shipper
 
 	// Maps for lookup by string IDs
 	truckersByTruckerID map[string]*models.Trucker
@@ -37,6 +40,7 @@ func NewMemoryStore() *MemoryStore {
 		truckers:            make(map[uint]*models.Trucker),
 		loads:               make(map[uint]*models.Load),
 		bookings:            make(map[uint]*models.Booking),
+		shippers:            make(map[string]*models.Shipper),
 		truckersByTruckerID: make(map[string]*models.Trucker),
 		loadsByLoadID:       make(map[string]*models.Load),
 		bookingsByBookingID: make(map[string]*models.Booking),
@@ -390,4 +394,90 @@ func (m *MemoryStore) UpdateBookingStatus(id string, status string) error {
 	}
 
 	return nil
+}
+
+// Shipper operations
+func (m *MemoryStore) CreateShipper(shipper *models.Shipper) (*models.Shipper, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Check if phone already exists
+	for _, s := range m.shippers {
+		if s.Phone == shipper.Phone {
+			return nil, fmt.Errorf("phone number already registered")
+		}
+		if s.GSTNumber == shipper.GSTNumber {
+			return nil, fmt.Errorf("GST number already registered")
+		}
+	}
+
+	// Generate ShipperID
+	shipper.ID = uint(len(m.shippers) + 1)
+	shipper.ShipperID = fmt.Sprintf("SH%05d", shipper.ID)
+	shipper.CreatedAt = time.Now()
+	shipper.UpdatedAt = time.Now()
+
+	m.shippers[shipper.ShipperID] = shipper
+	return shipper, nil
+}
+
+func (m *MemoryStore) GetShipper(id string) (*models.Shipper, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if shipper, ok := m.shippers[id]; ok {
+		return shipper, nil
+	}
+
+	// Try numeric ID
+	for _, shipper := range m.shippers {
+		if fmt.Sprintf("%d", shipper.ID) == id {
+			return shipper, nil
+		}
+	}
+
+	return nil, fmt.Errorf("shipper not found")
+}
+
+func (m *MemoryStore) GetShipperByPhone(phone string) (*models.Shipper, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, shipper := range m.shippers {
+		if shipper.Phone == phone {
+			return shipper, nil
+		}
+	}
+	return nil, fmt.Errorf("shipper not found")
+}
+
+func (m *MemoryStore) GetShipperByGST(gst string) (*models.Shipper, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, shipper := range m.shippers {
+		if shipper.GSTNumber == gst {
+			return shipper, nil
+		}
+	}
+	return nil, fmt.Errorf("shipper not found")
+}
+
+func (m *MemoryStore) GetLoadsByShipper(shipperID string) ([]*models.Load, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var loads []*models.Load
+	for _, load := range m.loads {
+		if load.ShipperID == shipperID {
+			loads = append(loads, load)
+		}
+	}
+
+	// Sort by created date (newest first)
+	sort.Slice(loads, func(i, j int) bool {
+		return loads[i].CreatedAt.After(loads[j].CreatedAt)
+	})
+
+	return loads, nil
 }
