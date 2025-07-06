@@ -334,6 +334,14 @@ func (d *DatabaseStore) UpdateBookingStatus(id string, status string) error {
 	return nil
 }
 
+func (d *DatabaseStore) UpdateBooking(booking *models.Booking) error {
+	// Use Save to update all fields including timestamps
+	if err := d.db.Save(booking).Error; err != nil {
+		return fmt.Errorf("failed to update booking: %w", err)
+	}
+	return nil
+}
+
 // Shipper operations
 func (d *DatabaseStore) CreateShipper(shipper *models.Shipper) (*models.Shipper, error) {
 	// Check if phone already exists
@@ -408,4 +416,42 @@ func (d *DatabaseStore) GetLoadsByShipper(shipperID string) ([]*models.Load, err
 		return nil, fmt.Errorf("failed to fetch loads: %w", err)
 	}
 	return loads, nil
+}
+
+// OTP operations
+func (d *DatabaseStore) CreateOTP(otp *models.OTP) (*models.OTP, error) {
+	if err := d.db.Create(otp).Error; err != nil {
+		return nil, fmt.Errorf("failed to create OTP: %w", err)
+	}
+	return otp, nil
+}
+
+func (d *DatabaseStore) GetActiveOTP(phone, code, purpose string) (*models.OTP, error) {
+	var otp models.OTP
+	err := d.db.Where("phone = ? AND code = ? AND purpose = ? AND is_used = ?",
+		phone, code, purpose, false).First(&otp).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("OTP not found or invalid")
+		}
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+	return &otp, nil
+}
+
+func (d *DatabaseStore) UpdateOTP(otp *models.OTP) error {
+	return d.db.Save(otp).Error
+}
+
+func (d *DatabaseStore) GetOTPByReference(referenceID, purpose string) (*models.OTP, error) {
+	var otp models.OTP
+	err := d.db.Where("reference_id = ? AND purpose = ? AND is_used = ?",
+		referenceID, purpose, false).First(&otp).Error
+	if err != nil {
+		if err == gorm.ErrRecordNotFound {
+			return nil, fmt.Errorf("OTP not found")
+		}
+		return nil, fmt.Errorf("database error: %w", err)
+	}
+	return &otp, nil
 }

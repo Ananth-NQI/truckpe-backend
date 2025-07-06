@@ -32,8 +32,8 @@ type Booking struct {
 	PaymentID     string `json:"payment_id"`                            // Razorpay payment ID
 
 	// Tracking
-	OTP    string `json:"-" gorm:"size:6"` // Hidden in JSON, for delivery confirmation
-	PodURL string `json:"pod_url"`         // Proof of Delivery document
+	// OTP removed - now handled by separate OTP table for better security
+	PodURL string `json:"pod_url"` // Proof of Delivery document
 
 	// Timestamps (keeping your custom timestamps)
 	ConfirmedAt *time.Time `json:"confirmed_at"`
@@ -48,17 +48,14 @@ type Booking struct {
 	// Trucker Trucker `json:"trucker,omitempty" gorm:"foreignKey:TruckerID;references:TruckerID"`
 }
 
-// BeforeCreate hook to auto-generate BookingID and OTP
+// BeforeCreate hook to auto-generate BookingID
 func (b *Booking) BeforeCreate(tx *gorm.DB) error {
 	// Generate BookingID if not set
 	if b.BookingID == "" {
 		b.BookingID = fmt.Sprintf("BK%d%03d", time.Now().Unix(), rand.Intn(1000))
 	}
 
-	// Generate OTP if not set
-	if b.OTP == "" {
-		b.OTP = fmt.Sprintf("%06d", rand.Intn(1000000))
-	}
+	// OTP generation removed - will be handled by OTP service when trucker arrives
 
 	// Calculate net amount if not set
 	if b.NetAmount == 0 && b.AgreedPrice > 0 {

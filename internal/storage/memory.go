@@ -17,6 +17,7 @@ type MemoryStore struct {
 	loads    map[uint]*models.Load    // Changed from string to uint
 	bookings map[uint]*models.Booking // Changed from string to uint
 	shippers map[string]*models.Shipper
+	otps     map[string]*models.OTP
 
 	// Maps for lookup by string IDs
 	truckersByTruckerID map[string]*models.Trucker
@@ -41,6 +42,7 @@ func NewMemoryStore() *MemoryStore {
 		loads:               make(map[uint]*models.Load),
 		bookings:            make(map[uint]*models.Booking),
 		shippers:            make(map[string]*models.Shipper),
+		otps:                make(map[string]*models.OTP),
 		truckersByTruckerID: make(map[string]*models.Trucker),
 		loadsByLoadID:       make(map[string]*models.Load),
 		bookingsByBookingID: make(map[string]*models.Booking),
@@ -396,6 +398,26 @@ func (m *MemoryStore) UpdateBookingStatus(id string, status string) error {
 	return nil
 }
 
+func (m *MemoryStore) UpdateBooking(booking *models.Booking) error {
+	m.bookingMu.Lock()
+	defer m.bookingMu.Unlock()
+
+	// Update the booking in both maps
+	booking.UpdatedAt = time.Now()
+
+	// Update in the ID map
+	if existingBooking, exists := m.bookings[booking.ID]; exists {
+		*existingBooking = *booking
+	}
+
+	// Update in the BookingID map
+	if existingBooking, exists := m.bookingsByBookingID[booking.BookingID]; exists {
+		*existingBooking = *booking
+	}
+
+	return nil
+}
+
 // Shipper operations
 func (m *MemoryStore) CreateShipper(shipper *models.Shipper) (*models.Shipper, error) {
 	m.mu.Lock()
@@ -480,4 +502,61 @@ func (m *MemoryStore) GetLoadsByShipper(shipperID string) ([]*models.Load, error
 	})
 
 	return loads, nil
+}
+
+// OTP operations
+func (m *MemoryStore) CreateOTP(otp *models.OTP) (*models.OTP, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	// Generate ID
+	otp.ID = uint(len(m.otps) + 1)
+	otp.CreatedAt = time.Now()
+	otp.UpdatedAt = time.Now()
+
+	// Store using phone+code+purpose as key
+	key := fmt.Sprintf("%s:%s:%s", otp.Phone, otp.Code, otp.Purpose)
+	m.otps[key] = otp
+
+	return otp, nil
+}
+
+func (m *MemoryStore) GetActiveOTP(phone, code, purpose string) (*models.OTP, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	key := fmt.Sprintf("%s:%s:%s", phone, code, purpose)
+	otp, exists := m.otps[key]
+	if !exists {
+		return nil, fmt.Errorf("OTP not found or invalid")
+	}
+
+	if otp.IsUsed {
+		return nil, fmt.Errorf("OTP already used")
+	}
+
+	return otp, nil
+}
+
+func (m *MemoryStore) UpdateOTP(otp *models.OTP) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	key := fmt.Sprintf("%s:%s:%s", otp.Phone, otp.Code, otp.Purpose)
+	m.otps[key] = otp
+
+	return nil
+}
+
+func (m *MemoryStore) GetOTPByReference(referenceID, purpose string) (*models.OTP, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	for _, otp := range m.otps {
+		if otp.ReferenceID == referenceID && otp.Purpose == purpose && !otp.IsUsed {
+			return otp, nil
+		}
+	}
+
+	return nil, fmt.Errorf("OTP not found")
 }

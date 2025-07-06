@@ -58,6 +58,15 @@ func (w *WhatsAppService) ProcessMessage(from, message string) (string, error) {
 	case strings.HasPrefix(msg, "TRACK"):
 		return w.handleTrackBooking(phone, msg)
 
+	case strings.HasPrefix(msg, "ARRIVED"):
+		return w.handleArrived(phone, msg)
+
+	case strings.HasPrefix(msg, "PICKUP"):
+		return w.handlePickup(phone, msg)
+
+	case strings.HasPrefix(msg, "DELIVER"):
+		return w.handleDeliver(phone, msg)
+
 	default:
 		return "❌ Invalid command. Type HELP to see available commands.", nil
 	}
@@ -72,6 +81,9 @@ func (w *WhatsAppService) getHelpMessage() string {
 🔍 *LOAD <from> <to>* - Search loads
 📦 *BOOK <load_id>* - Book a load
 📊 *STATUS* - Check your bookings
+📍 *ARRIVED <booking_id>* - At pickup location
+🚚 *PICKUP <booking_id> <otp>* - Confirm pickup
+📦 *DELIVER <booking_id>* - At delivery location
 
 *For Shippers:*
 🏭 *REGISTER SHIPPER* - Register as shipper
@@ -307,17 +319,25 @@ func (w *WhatsAppService) handleTrackBooking(phone, msg string) (string, error) 
 		// Get load details
 		load, _ := w.store.GetLoad(booking.LoadID)
 
+		statusInfo := ""
+		if booking.PickedUpAt != nil {
+			statusInfo = fmt.Sprintf("\n⏰ *Picked up:* %s", booking.PickedUpAt.Format("3:04 PM"))
+		}
+		if booking.DeliveredAt != nil {
+			statusInfo += fmt.Sprintf("\n✅ *Delivered:* %s", booking.DeliveredAt.Format("3:04 PM"))
+		}
+
 		return fmt.Sprintf(`📍 *Tracking Details*
 
 *Booking ID:* %s
 *Route:* %s → %s
 *Status:* %s
 *Trucker:* %s
-*Amount:* ₹%.0f
+*Amount:* ₹%.0f%s
 
 Last Update: Just now`,
 			booking.BookingID, load.FromCity, load.ToCity,
-			booking.Status, booking.TruckerID, booking.AgreedPrice), nil
+			booking.Status, booking.TruckerID, booking.AgreedPrice, statusInfo), nil
 	}
 
 	// If it's a load ID, show bookings for that load
@@ -474,7 +494,7 @@ func (w *WhatsAppService) handleLoadSearch(phone, msg string) (string, error) {
 	return response, nil
 }
 
-// Handle booking (existing code)
+// Handle booking (existing code - MODIFIED TO REMOVE STATIC OTP)
 func (w *WhatsAppService) handleBooking(phone, msg string) (string, error) {
 	// Check if trucker is registered
 	trucker, err := w.store.GetTruckerByPhone(phone)
@@ -517,15 +537,17 @@ func (w *WhatsAppService) handleBooking(phone, msg string) (string, error) {
 *Amount:* ₹%.0f
 *Your earnings:* ₹%.0f (after 5%% commission)
 
-📱 *OTP for pickup:* %s
-
-Show this OTP at pickup point.
+📍 *Next Steps:*
+1️⃣ Go to pickup location
+2️⃣ When you arrive, type: ARRIVED %s
+3️⃣ Get OTP from shipper
+4️⃣ Confirm pickup with OTP
 
 💰 Payment will be credited within 48 hours after delivery!
 
 Type STATUS to check your bookings.`,
 		booking.BookingID, load.LoadID, load.FromCity, load.ToCity,
-		load.Material, booking.AgreedPrice, booking.NetAmount, booking.OTP), nil
+		load.Material, booking.AgreedPrice, booking.NetAmount, booking.BookingID), nil
 }
 
 // Handle status check (existing code)
@@ -558,15 +580,351 @@ func (w *WhatsAppService) handleStatus(phone string) (string, error) {
 		// Get load details
 		load, _ := w.store.GetLoad(booking.LoadID)
 		if load != nil {
+			// Add action hints based on status
+			actionHint := ""
+			if booking.Status == models.BookingStatusConfirmed && booking.PickedUpAt == nil {
+				actionHint = "\n👉 Type: ARRIVED " + booking.BookingID
+			} else if booking.Status == models.BookingStatusInTransit && booking.DeliveredAt == nil {
+				actionHint = "\n👉 Type: DELIVER " + booking.BookingID
+			}
+
 			response += fmt.Sprintf(`🚛 *Booking:* %s
 📍 *Route:* %s → %s
 💰 *Earnings:* ₹%.0f
-📊 *Status:* %s
+📊 *Status:* %s%s
 
 `, booking.BookingID, load.FromCity, load.ToCity,
-				booking.NetAmount, booking.Status)
+				booking.NetAmount, booking.Status, actionHint)
 		}
 	}
 
 	return response, nil
+}
+
+// handleArrived generates OTP when trucker arrives at pickup location
+func (w *WhatsAppService) handleArrived(phone, msg string) (string, error) {
+	// Extract booking ID
+	parts := strings.Fields(msg)
+	if len(parts) < 2 {
+		return "❌ Please specify Booking ID\n\nExample: ARRIVED BK00001", nil
+	}
+
+	bookingID := parts[1]
+
+	// Verify trucker owns this booking
+	trucker, err := w.store.GetTruckerByPhone(phone)
+	if err != nil {
+		return "❌ Trucker not found. Please register first!", nil
+	}
+
+	booking, err := w.store.GetBooking(bookingID)
+	if err != nil {
+		return "❌ Booking not found. Check the booking ID.", nil
+	}
+
+	if booking.TruckerID != trucker.TruckerID {
+		return "❌ This booking doesn't belong to you.", nil
+	}
+
+	// Check if already picked up
+	if booking.PickedUpAt != nil {
+		return "❌ This load has already been picked up!", nil
+	}
+
+	// Generate OTP for pickup
+	otpService := NewOTPService(w.store)
+	otp, err := otpService.CreateOTP(phone, "booking_pickup", bookingID)
+	if err != nil {
+		return "❌ Failed to generate OTP. Please try again.", err
+	}
+
+	// Get shipper details
+	load, _ := w.store.GetLoad(booking.LoadID)
+	shipper, _ := w.store.GetShipperByPhone(load.ShipperPhone)
+
+	// In production, send OTP to shipper via SMS
+	// For now, we'll show it in response for testing
+
+	return fmt.Sprintf(`📍 *Arrival Confirmed!*
+
+*Booking:* %s
+*Load:* %s
+*Route:* %s → %s
+*Shipper:* %s
+
+✅ OTP has been sent to shipper
+⏰ Valid for 10 minutes
+
+Ask shipper for the OTP and type:
+PICKUP %s <OTP>
+
+_For testing: OTP is %s_`,
+		bookingID,
+		load.LoadID,
+		load.FromCity,
+		load.ToCity,
+		shipper.CompanyName,
+		bookingID,
+		otp.Code), nil
+}
+
+// handlePickup verifies OTP and confirms pickup
+func (w *WhatsAppService) handlePickup(phone, msg string) (string, error) {
+	// Format: PICKUP BK00001 123456
+	parts := strings.Fields(msg)
+	if len(parts) < 3 {
+		return "❌ Format: PICKUP <BookingID> <OTP>\n\nExample: PICKUP BK00001 123456", nil
+	}
+
+	bookingID := parts[1]
+	otpCode := parts[2]
+
+	// Verify trucker
+	trucker, err := w.store.GetTruckerByPhone(phone)
+	if err != nil {
+		return "❌ Trucker not found. Please register first!", nil
+	}
+
+	// Verify booking ownership
+	booking, err := w.store.GetBooking(bookingID)
+	if err != nil {
+		return "❌ Booking not found. Check the booking ID.", nil
+	}
+
+	if booking.TruckerID != trucker.TruckerID {
+		return "❌ This booking doesn't belong to you.", nil
+	}
+
+	// Verify OTP
+	otpService := NewOTPService(w.store)
+	valid, refID, err := otpService.VerifyOTP(phone, otpCode, "booking_pickup")
+
+	if err != nil {
+		if strings.Contains(err.Error(), "expired") {
+			return "❌ OTP has expired. Type ARRIVED to generate new OTP.", nil
+		}
+		if strings.Contains(err.Error(), "already used") {
+			return "❌ This OTP has already been used.", nil
+		}
+		if strings.Contains(err.Error(), "too many attempts") {
+			return "❌ Too many wrong attempts. Type ARRIVED to generate new OTP.", nil
+		}
+		return "❌ Invalid OTP. Please check and try again.", nil
+	}
+
+	if !valid || refID != bookingID {
+		return "❌ OTP doesn't match this booking.", nil
+	}
+
+	// Update booking status and pickup time
+	now := time.Now()
+	booking.PickedUpAt = &now
+	booking.Status = models.BookingStatusInTransit
+
+	// Update the entire booking (not just status)
+	err = w.store.UpdateBooking(booking)
+	if err != nil {
+		return "❌ Failed to update booking. Please try again.", err
+	}
+
+	// Get load details for response
+	load, _ := w.store.GetLoad(booking.LoadID)
+
+	return fmt.Sprintf(`✅ *Pickup Confirmed!*
+
+*Booking:* %s
+*Status:* In Transit 🚛
+*Pickup Time:* %s
+
+*Route:* %s → %s
+*Material:* %s
+*Your Earnings:* ₹%.0f
+
+📍 Share your live location for real-time tracking
+💰 Payment will be processed after delivery
+
+Safe journey! Drive carefully.
+
+_Next: When you reach destination, type DELIVER %s_`,
+		bookingID,
+		now.Format("3:04 PM"),
+		load.FromCity,
+		load.ToCity,
+		load.Material,
+		booking.NetAmount,
+		bookingID), nil
+}
+
+// handleDeliver handles delivery arrival and OTP generation
+func (w *WhatsAppService) handleDeliver(phone, msg string) (string, error) {
+	// Extract booking ID
+	parts := strings.Fields(msg)
+	if len(parts) < 2 {
+		return "❌ Please specify Booking ID\n\nExample: DELIVER BK00001", nil
+	}
+
+	bookingID := parts[1]
+
+	// Verify trucker owns this booking
+	trucker, err := w.store.GetTruckerByPhone(phone)
+	if err != nil {
+		return "❌ Trucker not found. Please register first!", nil
+	}
+
+	booking, err := w.store.GetBooking(bookingID)
+	if err != nil {
+		return "❌ Booking not found. Check the booking ID.", nil
+	}
+
+	if booking.TruckerID != trucker.TruckerID {
+		return "❌ This booking doesn't belong to you.", nil
+	}
+
+	// Check if not picked up yet
+	if booking.PickedUpAt == nil {
+		return "❌ Please complete pickup first! Type: ARRIVED " + bookingID, nil
+	}
+
+	// Check if already delivered
+	if booking.DeliveredAt != nil {
+		return "❌ This load has already been delivered!", nil
+	}
+
+	// If OTP provided in same message (DELIVER BK00001 123456)
+	if len(parts) >= 3 {
+		return w.handleDeliveryConfirmation(phone, msg)
+	}
+
+	// Generate OTP for delivery
+	otpService := NewOTPService(w.store)
+	otp, err := otpService.CreateOTP(phone, "booking_delivery", bookingID)
+	if err != nil {
+		return "❌ Failed to generate OTP. Please try again.", err
+	}
+
+	// Get load and shipper details
+	load, _ := w.store.GetLoad(booking.LoadID)
+	shipper, _ := w.store.GetShipperByPhone(load.ShipperPhone)
+
+	return fmt.Sprintf(`📍 *Arrival at Delivery Location Confirmed!*
+
+*Booking:* %s
+*Route:* %s → %s
+*Consignee:* Contact shipper for details
+
+✅ OTP has been sent to consignee
+⏰ Valid for 10 minutes
+
+Get OTP from consignee and type:
+DELIVER %s <OTP>
+
+_For testing: OTP is %s_`,
+		bookingID,
+		load.FromCity,
+		load.ToCity,
+		bookingID,
+		otp.Code), nil
+}
+
+// handleDeliveryConfirmation verifies OTP and completes delivery
+func (w *WhatsAppService) handleDeliveryConfirmation(phone, msg string) (string, error) {
+	// Format: DELIVER BK00001 123456
+	parts := strings.Fields(msg)
+	if len(parts) < 3 {
+		return "❌ Format: DELIVER <BookingID> <OTP>\n\nExample: DELIVER BK00001 123456", nil
+	}
+
+	bookingID := parts[1]
+	otpCode := parts[2]
+
+	// Verify trucker
+	trucker, err := w.store.GetTruckerByPhone(phone)
+	if err != nil {
+		return "❌ Trucker not found. Please register first!", nil
+	}
+
+	// Get booking
+	booking, err := w.store.GetBooking(bookingID)
+	if err != nil {
+		return "❌ Booking not found. Check the booking ID.", nil
+	}
+
+	if booking.TruckerID != trucker.TruckerID {
+		return "❌ This booking doesn't belong to you.", nil
+	}
+
+	// Verify OTP
+	otpService := NewOTPService(w.store)
+	valid, refID, err := otpService.VerifyOTP(phone, otpCode, "booking_delivery")
+
+	if err != nil {
+		if strings.Contains(err.Error(), "expired") {
+			return "❌ OTP has expired. Type DELIVER " + bookingID + " to generate new OTP.", nil
+		}
+		if strings.Contains(err.Error(), "already used") {
+			return "❌ This OTP has already been used.", nil
+		}
+		if strings.Contains(err.Error(), "too many attempts") {
+			return "❌ Too many wrong attempts. Type DELIVER " + bookingID + " to generate new OTP.", nil
+		}
+		return "❌ Invalid OTP. Please check and try again.", nil
+	}
+
+	if !valid || refID != bookingID {
+		return "❌ OTP doesn't match this booking.", nil
+	}
+
+	// Update booking status and delivery time
+	now := time.Now()
+	booking.DeliveredAt = &now
+	booking.Status = models.BookingStatusDelivered
+	booking.PaymentStatus = "pending"
+
+	// Update the entire booking
+	err = w.store.UpdateBooking(booking)
+	if err != nil {
+		return "❌ Failed to update delivery status. Please try again.", err
+	}
+
+	// Update load status to completed
+	err = w.store.UpdateLoadStatus(booking.LoadID, "completed")
+	if err != nil {
+		// Log error but don't fail the delivery confirmation
+		fmt.Printf("Error updating load status: %v\n", err)
+	}
+
+	// Get load details for response
+	load, _ := w.store.GetLoad(booking.LoadID)
+
+	// Calculate journey time
+	journeyTime := ""
+	if booking.PickedUpAt != nil {
+		duration := now.Sub(*booking.PickedUpAt)
+		hours := int(duration.Hours())
+		minutes := int(duration.Minutes()) % 60
+		journeyTime = fmt.Sprintf("%dh %dm", hours, minutes)
+	}
+
+	return fmt.Sprintf(`✅ *Delivery Completed Successfully!*
+
+*Booking:* %s
+*Route:* %s → %s
+*Delivery Time:* %s
+*Journey Duration:* %s
+
+💰 *Payment Details:*
+*Your Earnings:* ₹%.0f
+*Status:* Processing
+*Expected Credit:* Within 48 hours
+
+🎉 Great job! Safe journey completed.
+
+Type STATUS to see your other bookings.
+Type LOAD <from> <to> to find new loads.`,
+		bookingID,
+		load.FromCity,
+		load.ToCity,
+		now.Format("3:04 PM"),
+		journeyTime,
+		booking.NetAmount), nil
 }

@@ -45,6 +45,7 @@ func main() {
 			&models.Booking{},
 			&models.WhatsAppSession{},
 			&models.Shipper{},
+			&models.OTP{}, // Added OTP model for dynamic OTP system
 		)
 		if err != nil {
 			log.Fatal("Failed to migrate database:", err)
@@ -102,16 +103,20 @@ func main() {
 			}
 
 			// Get counts
-			var truckerCount, loadCount, bookingCount int64
+			var truckerCount, loadCount, bookingCount, shipperCount, otpCount int64
 			database.DB.Model(&models.Trucker{}).Count(&truckerCount)
 			database.DB.Model(&models.Load{}).Count(&loadCount)
 			database.DB.Model(&models.Booking{}).Count(&bookingCount)
+			database.DB.Model(&models.Shipper{}).Count(&shipperCount)
+			database.DB.Model(&models.OTP{}).Count(&otpCount)
 
 			response["database"] = fiber.Map{
 				"status":   dbStatus,
 				"truckers": truckerCount,
 				"loads":    loadCount,
 				"bookings": bookingCount,
+				"shippers": shipperCount,
+				"otps":     otpCount,
 			}
 		}
 
