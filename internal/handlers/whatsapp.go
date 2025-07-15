@@ -2,134 +2,150 @@ package handlers
 
 import (
 	"log"
+	"os"
 
 	"github.com/Ananth-NQI/truckpe-backend/internal/services"
 	"github.com/Ananth-NQI/truckpe-backend/internal/storage"
 	"github.com/gofiber/fiber/v2"
 )
 
-// WhatsAppHandler handles WhatsApp webhook requests
-// WhatsAppHandler handles WhatsApp webhook requests
-type WhatsAppHandler struct {
-	store           storage.Store
-	whatsappService *services.WhatsAppService
-	twilioService   *services.TwilioService // ADD THIS
-}
+// HandleWebhook processes incoming WhatsApp messages from Twilio
+func HandleWebhook(c *fiber.Ctx) error {
+	// Parse form values from Twilio
+	from := c.FormValue("From")
+	body := c.FormValue("Body")
 
-// NewWhatsAppHandler creates a new WhatsApp handler
-func NewWhatsAppHandler(store storage.Store) *WhatsAppHandler {
-	// Initialize Twilio service
-	twilioSvc, err := services.NewTwilioService()
-	if err != nil {
-		log.Printf("⚠️  Warning: Twilio service not initialized: %v", err)
-		// Continue without Twilio for testing
+	// Check for button/interactive responses
+	buttonPayload := c.FormValue("ButtonPayload", "")
+	listReplyId := c.FormValue("ListReplyId", "")
+
+	// Combine button responses
+	if buttonPayload == "" && listReplyId != "" {
+		buttonPayload = listReplyId
 	}
 
-	return &WhatsAppHandler{
-		store:           store,
-		whatsappService: services.NewWhatsAppService(store),
-		twilioService:   twilioSvc,
-	}
-}
+	// Log the webhook data
+	log.Printf("WhatsApp webhook - From: %s, Body: %s, ButtonPayload: %s", from, body, buttonPayload)
 
-// HandleWebhook processes incoming WhatsApp messages
-func (h *WhatsAppHandler) HandleWebhook(c *fiber.Ctx) error {
-	// Twilio sends different payloads for different events
-	var payload TwilioWebhookPayload
+	// Get services
+	store := storage.GetStore()
+	twilioService := services.GetTwilioService()
 
-	if err := c.BodyParser(&payload); err != nil {
-		log.Printf("Error parsing webhook: %v", err)
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid webhook payload",
-		})
-	}
+	// Check if natural flow is enabled (can be controlled via env var)
+	useNaturalFlow := os.Getenv("USE_NATURAL_FLOW") != "false" // Default to true
 
-	// Log incoming message
-	log.Printf("📱 WhatsApp Message from %s: %s", payload.From, payload.Body)
+	if useNaturalFlow {
+		// Initialize all required services
+		templateService := services.NewTemplateService(twilioService)
+		interactiveService := services.NewInteractiveTemplateService(store, twilioService)
+		sessionManager := services.GetSessionManager() // Use singleton
 
-	// Process only incoming messages (not status updates)
-	if payload.Body != "" && payload.From != "" {
-		// Remove 'whatsapp:' prefix if present
-		from := payload.From
-		if len(from) > 9 && from[:9] == "whatsapp:" {
-			from = from[9:]
+		// Create natural flow service
+		naturalFlowService := services.NewNaturalFlowService(
+			store,
+			sessionManager,
+			templateService,
+			interactiveService,
+			twilioService,
+		)
+
+		// Process through natural flow
+		err := naturalFlowService.ProcessNaturalMessage(from, body, buttonPayload)
+		if err != nil {
+			log.Printf("Natural flow error: %v", err)
+			// Fallback to command-based processing
+			whatsappService := services.NewWhatsAppService(store, twilioService)
+			response, _ := whatsappService.ProcessMessage(from, body)
+			if response != "" {
+				twilioService.SendWhatsAppMessage(from, response)
+			}
 		}
-
-		// Process the message
-		response, err := h.whatsappService.ProcessMessage(from, payload.Body)
+	} else {
+		// Use existing command-based processing
+		whatsappService := services.NewWhatsAppService(store, twilioService)
+		response, err := whatsappService.ProcessMessage(from, body)
 		if err != nil {
 			log.Printf("Error processing message: %v", err)
-			response = "❌ Sorry, something went wrong. Please try again."
+			response = "Sorry, something went wrong. Please try again."
 		}
 
-		// Send the response back via Twilio
-		if h.twilioService != nil && response != "" {
-			err = h.twilioService.SendWhatsAppMessage(from, response)
+		// Send response if any
+		if response != "" {
+			err = twilioService.SendWhatsAppMessage(from, response)
 			if err != nil {
-				log.Printf("❌ Failed to send WhatsApp response: %v", err)
-			} else {
-				log.Printf("✅ Response sent to %s", from)
+				log.Printf("Error sending response: %v", err)
 			}
-		} else {
-			log.Printf("📤 Response (not sent - Twilio not configured): %s", response)
 		}
 	}
 
-	// Acknowledge webhook receipt
+	// Return success to Twilio
 	return c.SendStatus(fiber.StatusOK)
 }
 
-// TwilioWebhookPayload represents incoming WhatsApp message from Twilio
-type TwilioWebhookPayload struct {
-	MessageSid          string `form:"MessageSid"`
-	AccountSid          string `form:"AccountSid"`
-	MessagingServiceSid string `form:"MessagingServiceSid"`
-	From                string `form:"From"` // WhatsApp number (whatsapp:+919876543210)
-	To                  string `form:"To"`   // Your Twilio number
-	Body                string `form:"Body"` // Message text
-	NumMedia            string `form:"NumMedia"`
-	MediaUrl0           string `form:"MediaUrl0"`
-	MediaContentType0   string `form:"MediaContentType0"`
-}
-
-// For testing without Twilio
-type TestWebhookPayload struct {
-	From    string `json:"from"`
-	Message string `json:"message"`
-}
-
-// HandleTestWebhook processes test WhatsApp messages (for development)
-func (h *WhatsAppHandler) HandleTestWebhook(c *fiber.Ctx) error {
-	var payload TestWebhookPayload
-
-	if err := c.BodyParser(&payload); err != nil {
-		return c.Status(fiber.StatusBadRequest).JSON(fiber.Map{
-			"error": "Invalid test payload",
-		})
+// TestWebhook is a test endpoint for local development
+func TestWebhook(c *fiber.Ctx) error {
+	// Parse JSON body for testing
+	var testData struct {
+		From          string `json:"from"`
+		Body          string `json:"body"`
+		ButtonPayload string `json:"button_payload"`
 	}
 
-	// ADD THESE LOGS
-	log.Printf("🧪 Test webhook received from %s: %s", payload.From, payload.Message)
-
-	// Process the message
-	response, err := h.whatsappService.ProcessMessage(payload.From, payload.Message)
-	if err != nil {
-		log.Printf("Error processing message: %v", err)
-		response = "❌ Sorry, something went wrong. Please try again."
+	if err := c.BodyParser(&testData); err != nil {
+		// Try form data
+		testData.From = c.FormValue("from", "whatsapp:+1234567890")
+		testData.Body = c.FormValue("body", "test message")
+		testData.ButtonPayload = c.FormValue("button_payload", "")
 	}
 
-	// ADD THIS LOG
-	log.Printf("📤 Test response generated: %s", response)
+	// Get services
+	store := storage.GetStore()
+	twilioService := services.GetTwilioService()
 
-	// ADD THIS CHECK
-	if h.twilioService != nil {
-		log.Println("✅ Twilio service is initialized")
+	// Check if natural flow is enabled
+	useNaturalFlow := os.Getenv("USE_NATURAL_FLOW") != "false"
+
+	var response string
+	var err error
+
+	if useNaturalFlow {
+		// Initialize all required services
+		templateService := services.NewTemplateService(twilioService)
+		interactiveService := services.NewInteractiveTemplateService(store, twilioService)
+		sessionManager := services.GetSessionManager()
+
+		// Create natural flow service
+		naturalFlowService := services.NewNaturalFlowService(
+			store,
+			sessionManager,
+			templateService,
+			interactiveService,
+			twilioService,
+		)
+
+		// Process through natural flow
+		err = naturalFlowService.ProcessNaturalMessage(testData.From, testData.Body, testData.ButtonPayload)
+		if err != nil {
+			response = "Natural flow error: " + err.Error()
+		} else {
+			response = "Message processed through natural flow"
+		}
 	} else {
-		log.Println("⚠️ Twilio service is NOT initialized")
+		// Use command-based processing
+		whatsappService := services.NewWhatsAppService(store, twilioService)
+		response, err = whatsappService.ProcessMessage(testData.From, testData.Body)
+		if err != nil {
+			response = "Error: " + err.Error()
+		}
 	}
 
+	// Return response
 	return c.JSON(fiber.Map{
-		"success":  true,
-		"response": response,
+		"success":      err == nil,
+		"response":     response,
+		"from":         testData.From,
+		"body":         testData.Body,
+		"button":       testData.ButtonPayload,
+		"natural_flow": useNaturalFlow,
 	})
 }

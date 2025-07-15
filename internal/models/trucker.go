@@ -14,18 +14,22 @@ type Trucker struct {
 	gorm.Model
 
 	// Keep your TruckerID as string for backward compatibility
-	TruckerID    string  `json:"trucker_id" gorm:"uniqueIndex"`
-	Name         string  `json:"name"`
-	Phone        string  `json:"phone" gorm:"uniqueIndex"`      // WhatsApp number - unique
-	AadhaarLast4 string  `json:"aadhaar_last4"`                 // Last 4 digits for privacy
-	VehicleNo    string  `json:"vehicle_no" gorm:"uniqueIndex"` // Vehicle number should be unique
-	VehicleType  string  `json:"vehicle_type"`                  // e.g., "32ft multi axle", "19ft truck"
-	Capacity     float64 `json:"capacity"`                      // in tons
-	Verified     bool    `json:"verified" gorm:"default:false"`
-	Rating       float64 `json:"rating" gorm:"default:5.0"`
-	TotalTrips   int     `json:"total_trips" gorm:"default:0"`
-	CurrentCity  string  `json:"current_city"`
-	Available    bool    `json:"available" gorm:"default:true"`
+	TruckerID          string     `json:"trucker_id" gorm:"uniqueIndex"`
+	Name               string     `json:"name"`
+	Phone              string     `json:"phone" gorm:"uniqueIndex"`      // WhatsApp number - unique
+	AadhaarLast4       string     `json:"aadhaar_last4"`                 // Last 4 digits for privacy
+	VehicleNo          string     `json:"vehicle_no" gorm:"uniqueIndex"` // Vehicle number should be unique
+	VehicleType        string     `json:"vehicle_type"`                  // e.g., "32ft multi axle", "19ft truck"
+	Capacity           float64    `json:"capacity"`                      // in tons
+	Verified           bool       `json:"verified" gorm:"default:false"`
+	Rating             float64    `json:"rating" gorm:"default:5.0"`
+	TotalTrips         int        `json:"total_trips" gorm:"default:0"`
+	CurrentCity        string     `json:"current_city"`
+	Available          bool       `json:"available" gorm:"default:true"`
+	IsActive           bool       `json:"is_active" gorm:"default:true"`
+	IsSuspended        bool       `json:"is_suspended" gorm:"default:false"`
+	DocumentExpiryDate *time.Time `json:"document_expiry_date"`
+	PaidAt             *time.Time `json:"paid_at"` // For payment tracking
 
 	// Note: CreatedAt and UpdatedAt are automatically handled by gorm.Model
 

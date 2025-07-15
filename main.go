@@ -3,6 +3,8 @@ package main
 import (
 	"log"
 	"os"
+	"os/signal"
+	"syscall"
 
 	"github.com/gofiber/fiber/v2"
 	"github.com/gofiber/fiber/v2/middleware/cors"
@@ -11,18 +13,38 @@ import (
 	"github.com/joho/godotenv"
 
 	"github.com/Ananth-NQI/truckpe-backend/database"
-	"github.com/Ananth-NQI/truckpe-backend/internal/models" // Fixed: added 'internal'
+	"github.com/Ananth-NQI/truckpe-backend/internal/jobs"
+	"github.com/Ananth-NQI/truckpe-backend/internal/models"
 	"github.com/Ananth-NQI/truckpe-backend/internal/routes"
+	"github.com/Ananth-NQI/truckpe-backend/internal/services"
 	"github.com/Ananth-NQI/truckpe-backend/internal/storage"
 )
 
 func main() {
 	// Load .env file for local development
 	if os.Getenv("INSTANCE_CONNECTION_NAME") == "" {
-		err := godotenv.Load()
+		// Try multiple locations for .env file
+		err := godotenv.Load(".env")
 		if err != nil {
-			log.Println("No .env file found - assuming production environment")
+			err = godotenv.Load("environments/.env.development")
+			if err != nil {
+				log.Println("⚠️  No .env file found - checking environment variables")
+			}
 		}
+
+		// Debug what we loaded
+		log.Printf("🔍 TWILIO_ACCOUNT_SID exists: %v", os.Getenv("TWILIO_ACCOUNT_SID") != "")
+		log.Printf("🔍 TWILIO_AUTH_TOKEN exists: %v", os.Getenv("TWILIO_AUTH_TOKEN") != "")
+		log.Printf("🔍 TWILIO_WHATSAPP_FROM: %s", os.Getenv("TWILIO_WHATSAPP_FROM"))
+	}
+
+	// Get Twilio credentials
+	twilioAccountSID := os.Getenv("TWILIO_ACCOUNT_SID")
+	twilioAuthToken := os.Getenv("TWILIO_AUTH_TOKEN")
+	twilioPhoneNumber := os.Getenv("TWILIO_PHONE_NUMBER")
+
+	if twilioAccountSID == "" || twilioAuthToken == "" || twilioPhoneNumber == "" {
+		log.Println("⚠️  Twilio credentials not found - WhatsApp features will be limited")
 	}
 
 	// Initialize storage
@@ -45,7 +67,11 @@ func main() {
 			&models.Booking{},
 			&models.WhatsAppSession{},
 			&models.Shipper{},
-			&models.OTP{}, // Added OTP model for dynamic OTP system
+			&models.OTP{},
+			&models.SupportTicket{}, // Add new models
+			&models.Verification{},  // Add new models
+			&models.TruckerStats{},  // Add new models
+			&models.ShipperStats{},  // Add new models
 		)
 		if err != nil {
 			log.Fatal("Failed to migrate database:", err)
@@ -56,6 +82,35 @@ func main() {
 		store = storage.NewDatabaseStore(database.DB)
 		log.Println("✅ Using PostgreSQL database storage")
 	}
+
+	// Initialize Twilio service
+	twilioService, err := services.NewTwilioService()
+	if err != nil {
+		log.Fatal("Failed to initialize Twilio service:", err)
+	}
+	log.Println("✅ Twilio service initialized")
+
+	// Set global instances
+	storage.SetStore(store)
+	services.SetTwilioService(twilioService)
+
+	// Initialize all services
+	paymentService := services.NewPaymentService(store, twilioService)
+	sessionManager := services.NewSessionManager(store, twilioService)
+	services.SetSessionManager(sessionManager)
+	routeSuggestionService := services.NewRouteSuggestionService(store, twilioService)
+	interactiveService := services.NewInteractiveTemplateService(store, twilioService)
+	_ = interactiveService // Mark as intentionally unused for now
+
+	// Initialize and start notification jobs
+	notificationJob := jobs.NewNotificationJob(store, twilioService)
+	notificationJob.Start()
+
+	// Start scheduled services
+	paymentService.SchedulePaymentReminders()
+	routeSuggestionService.ScheduleRouteSuggestions()
+
+	log.Println("✅ All services initialized and scheduled jobs started")
 
 	// Create fiber app
 	app := fiber.New(fiber.Config{
@@ -90,6 +145,10 @@ func main() {
 			"status":      "healthy",
 			"environment": getEnvironment(),
 			"storage":     getStorageType(),
+			"whatsapp": fiber.Map{
+				"configured": twilioAccountSID != "",
+				"templates":  41,
+			},
 		}
 
 		// Add database status if using database
@@ -120,6 +179,21 @@ func main() {
 			}
 		}
 
+		// Add service status
+		response["services"] = fiber.Map{
+			"payment":       "active",
+			"sessions":      len(sessionManager.GetActiveSessions()),
+			"notifications": "running",
+			"scheduled_jobs": fiber.Map{
+				"payment_reminders":  "active",
+				"route_suggestions":  "active",
+				"weekly_summaries":   "active",
+				"document_expiry":    "active",
+				"maintenance_alerts": "active",
+				"inactivity_check":   "active",
+			},
+		}
+
 		return c.JSON(response)
 	})
 
@@ -137,13 +211,20 @@ func main() {
 			}
 		}
 
+		// Check Twilio service
+		twilioHealthy := twilioService != nil && twilioAccountSID != ""
+
 		return c.Status(statusCode).JSON(fiber.Map{
 			"status": status,
+			"services": fiber.Map{
+				"database": status == "healthy",
+				"twilio":   twilioHealthy,
+			},
 		})
 	})
 
-	// Setup routes
-	routes.SetupRoutes(app, store)
+	// Setup routes with twilioService
+	routes.SetupRoutes(app, store, twilioService)
 
 	// Get port from environment or use default
 	port := os.Getenv("PORT")
@@ -151,13 +232,37 @@ func main() {
 		port = "8080"
 	}
 
+	// Handle graceful shutdown
+	c := make(chan os.Signal, 1)
+	signal.Notify(c, os.Interrupt, syscall.SIGTERM)
+
+	go func() {
+		<-c
+		log.Println("\n🛑 Gracefully shutting down...")
+		log.Println("⏹️  Stopping notification jobs...")
+		notificationJob.Stop()
+		log.Println("⏹️  Shutting down server...")
+		_ = app.Shutdown()
+	}()
+
 	// Start server
 	log.Println("========================================")
 	log.Printf("🚀 TruckPe Backend starting on port %s", port)
 	log.Printf("📊 Storage: %s", getStorageType())
 	log.Printf("🌍 Environment: %s", getEnvironment())
+	log.Printf("📱 WhatsApp: %s", getWhatsAppStatus(twilioAccountSID))
+	log.Printf("📋 Templates: 41 integrated")
 	log.Println("========================================")
 	log.Println("✅ TEST: Logging is working!")
+
+	// Log active services
+	log.Println("🔧 Active Services:")
+	log.Println("  ✓ Payment processing & reminders")
+	log.Println("  ✓ Session management")
+	log.Println("  ✓ Route suggestions")
+	log.Println("  ✓ Interactive templates")
+	log.Println("  ✓ Scheduled notifications")
+	log.Println("========================================")
 
 	log.Fatal(app.Listen(":" + port))
 }
@@ -174,4 +279,11 @@ func getStorageType() string {
 		return "In-Memory (Testing)"
 	}
 	return "PostgreSQL Database"
+}
+
+func getWhatsAppStatus(twilioSID string) string {
+	if twilioSID == "" {
+		return "Not configured"
+	}
+	return "Configured"
 }

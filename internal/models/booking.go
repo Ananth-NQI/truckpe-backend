@@ -28,8 +28,9 @@ type Booking struct {
 	Status string `json:"status" gorm:"default:confirmed"` // "confirmed", "trucker_assigned", "in_transit", "delivered", "completed"
 
 	// Payment status
-	PaymentStatus string `json:"payment_status" gorm:"default:pending"` // "pending", "escrow", "released", "completed"
-	PaymentID     string `json:"payment_id"`                            // Razorpay payment ID
+	PaymentStatus string     `json:"payment_status" gorm:"default:pending"` // "pending", "escrow", "released", "completed"
+	PaymentID     string     `json:"payment_id"`                            // Razorpay payment ID
+	PaidAt        *time.Time `json:"paid_at"`
 
 	// Tracking
 	// OTP removed - now handled by separate OTP table for better security
@@ -40,6 +41,7 @@ type Booking struct {
 	PickedUpAt  *time.Time `json:"picked_up_at"`
 	DeliveredAt *time.Time `json:"delivered_at"`
 	CompletedAt *time.Time `json:"completed_at"`
+	CancelledAt *time.Time `json:"cancelled_at,omitempty"`
 
 	// Note: CreatedAt and UpdatedAt are automatically handled by gorm.Model
 
@@ -79,6 +81,7 @@ const (
 	BookingStatusInTransit       = "in_transit"
 	BookingStatusDelivered       = "delivered"
 	BookingStatusCompleted       = "completed"
+	BookingStatusCancelled       = "cancelled"
 
 	PaymentStatusPending   = "pending"
 	PaymentStatusEscrow    = "escrow"

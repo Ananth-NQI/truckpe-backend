@@ -1,0 +1,19 @@
+package main
+
+import (
+    "fmt"
+    "os"
+    "github.com/joho/godotenv"
+)
+
+func main() {
+    err := godotenv.Load()
+    if err != nil {
+        fmt.Println("Error loading .env:", err)
+    }
+    
+    fmt.Println("TWILIO_ACCOUNT_SID:", os.Getenv("TWILIO_ACCOUNT_SID"))
+    fmt.Println("TWILIO_AUTH_TOKEN length:", len(os.Getenv("TWILIO_AUTH_TOKEN")))
+    fmt.Println("TWILIO_WHATSAPP_FROM:", os.Getenv("TWILIO_WHATSAPP_FROM"))
+    fmt.Println("TWILIO_PHONE_NUMBER:", os.Getenv("TWILIO_PHONE_NUMBER"))
+}

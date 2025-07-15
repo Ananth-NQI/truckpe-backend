@@ -1,20 +1,18 @@
 package routes
 
 import (
+	"os"
+
 	"github.com/Ananth-NQI/truckpe-backend/internal/handlers"
+	"github.com/Ananth-NQI/truckpe-backend/internal/middleware"
+	"github.com/Ananth-NQI/truckpe-backend/internal/services"
 	"github.com/Ananth-NQI/truckpe-backend/internal/storage"
+
 	"github.com/gofiber/fiber/v2"
 )
 
 // SetupRoutes configures all API routes
-func SetupRoutes(app *fiber.App, store storage.Store) { // Changed from *storage.MemoryStore to interface
-
-	// Initialize handlers
-	healthHandler := handlers.NewHealthHandler("1.0.0")
-	truckerHandler := handlers.NewTruckerHandler(store)
-	loadHandler := handlers.NewLoadHandler(store)
-	bookingHandler := handlers.NewBookingHandler(store)
-	whatsappHandler := handlers.NewWhatsAppHandler(store)
+func SetupRoutes(app *fiber.App, store storage.Store, twilioService *services.TwilioService) {
 
 	// Root endpoint
 	app.Get("/", func(c *fiber.Ctx) error {
@@ -26,41 +24,70 @@ func SetupRoutes(app *fiber.App, store storage.Store) { // Changed from *storage
 				"api":           "/api",
 				"webhook":       "/webhook/whatsapp",
 				"test_whatsapp": "/test/whatsapp",
+				"admin":         "/admin",
 			},
 		})
 	})
 
-	// Health check
-	app.Get("/health", healthHandler.Check)
+	// Health check - You'll need to implement this or use a simple handler
+	app.Get("/health", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{
+			"status":  "healthy",
+			"version": "1.0.0",
+		})
+	})
 
 	// API routes
 	api := app.Group("/api")
 
-	// Trucker routes
+	// Trucker routes - These need to be implemented in handlers package
 	truckers := api.Group("/truckers")
-	truckers.Post("/register", truckerHandler.Register)
-	truckers.Get("/:id", truckerHandler.GetTrucker)
-	truckers.Get("/", truckerHandler.GetTruckerByPhone) // Query param: ?phone=+919876543210
+	truckers.Post("/register", func(c *fiber.Ctx) error {
+		// TODO: Implement in handlers
+		return c.JSON(fiber.Map{"error": "not implemented"})
+	})
+	truckers.Get("/:id", func(c *fiber.Ctx) error {
+		// TODO: Implement in handlers
+		return c.JSON(fiber.Map{"error": "not implemented"})
+	})
 
-	// Load routes
+	// Load routes - These need to be implemented
 	loads := api.Group("/loads")
-	loads.Get("/", loadHandler.GetLoads)
-	loads.Post("/", loadHandler.CreateLoad)
-	loads.Get("/:id", loadHandler.GetLoad)
-	loads.Post("/search", loadHandler.SearchLoads)
-	loads.Put("/:id/status", loadHandler.UpdateLoadStatus)
+	loads.Get("/", func(c *fiber.Ctx) error {
+		// TODO: Implement in handlers
+		return c.JSON(fiber.Map{"error": "not implemented"})
+	})
 
-	// Booking routes
+	// Booking routes - These need to be implemented
 	bookings := api.Group("/bookings")
-	bookings.Post("/", bookingHandler.CreateBooking)
-	bookings.Get("/:id", bookingHandler.GetBooking)
-	bookings.Get("/trucker/:truckerID", bookingHandler.GetTruckerBookings)
-	bookings.Get("/load/:loadID", bookingHandler.GetLoadBookings)
-	bookings.Put("/:id/status", bookingHandler.UpdateBookingStatus)
+	bookings.Post("/", func(c *fiber.Ctx) error {
+		// TODO: Implement in handlers
+		return c.JSON(fiber.Map{"error": "not implemented"})
+	})
 
-	// WhatsApp webhook (for production Twilio)
-	app.Post("/webhook/whatsapp", whatsappHandler.HandleWebhook)
+	// ========== WEBHOOK ROUTES ==========
+	webhooks := app.Group("/webhook")
 
+	// WhatsApp webhook - ENVIRONMENT-AWARE VALIDATION
+	if os.Getenv("ENVIRONMENT") == "development" || os.Getenv("DISABLE_WEBHOOK_VALIDATION") == "true" {
+		// Development: Skip validation for ngrok
+		webhooks.Post("/whatsapp", handlers.HandleWebhook)
+		// Log that validation is disabled
+		if os.Getenv("ENVIRONMENT") == "development" {
+			println("⚠️  WhatsApp webhook validation DISABLED for development")
+		}
+	} else {
+		// Production: Validate webhook signature
+		webhooks.Post("/whatsapp", middleware.ValidateTwilioSignature(), handlers.HandleWebhook)
+	}
+
+	// ========== TEST ROUTES (Development Only) ==========
 	// Test WhatsApp endpoint (for development)
-	app.Post("/test/whatsapp", whatsappHandler.HandleTestWebhook)
+	app.Post("/test/whatsapp", handlers.TestWebhook)
+
+	// ========== ADMIN ROUTES ==========
+	admin := app.Group("/admin")
+	admin.Get("/overview", func(c *fiber.Ctx) error {
+		return c.JSON(fiber.Map{"message": "Admin routes not implemented yet"})
+	})
 }

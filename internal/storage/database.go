@@ -193,15 +193,15 @@ func (d *DatabaseStore) CreateBooking(loadID, truckerID string) (*models.Booking
 		}
 	}()
 
-	// Get load with proper ID handling
+	// Get load with FOR UPDATE lock to prevent concurrent bookings
 	var load models.Load
 	if strings.HasPrefix(loadID, "LD") {
-		if err := tx.Where("load_id = ?", loadID).First(&load).Error; err != nil {
+		if err := tx.Set("gorm:query_option", "FOR UPDATE").Where("load_id = ?", loadID).First(&load).Error; err != nil {
 			tx.Rollback()
 			return nil, fmt.Errorf("load not found")
 		}
 	} else {
-		if err := tx.Where("id = ?", loadID).First(&load).Error; err != nil {
+		if err := tx.Set("gorm:query_option", "FOR UPDATE").Where("id = ?", loadID).First(&load).Error; err != nil {
 			tx.Rollback()
 			return nil, fmt.Errorf("load not found")
 		}
@@ -454,4 +454,232 @@ func (d *DatabaseStore) GetOTPByReference(referenceID, purpose string) (*models.
 		return nil, fmt.Errorf("database error: %w", err)
 	}
 	return &otp, nil
+}
+
+// GetAllTruckers returns all truckers
+func (d *DatabaseStore) GetAllTruckers() ([]*models.Trucker, error) {
+	var truckers []*models.Trucker
+	err := d.db.Find(&truckers).Error
+	return truckers, err
+}
+
+// GetAvailableTruckers returns all available truckers
+func (d *DatabaseStore) GetAvailableTruckers() ([]*models.Trucker, error) {
+	var truckers []*models.Trucker
+	err := d.db.Where("available = ? AND is_suspended = ?", true, false).Find(&truckers).Error
+	return truckers, err
+}
+
+// UpdateTrucker updates a trucker
+func (d *DatabaseStore) UpdateTrucker(trucker *models.Trucker) error {
+	return d.db.Save(trucker).Error
+}
+
+// GetTruckerByID returns a trucker by ID (same as GetTrucker but explicit)
+func (d *DatabaseStore) GetTruckerByID(truckerID string) (*models.Trucker, error) {
+	return d.GetTrucker(truckerID)
+}
+
+// GetShipperByID returns a shipper by ID (same as GetShipper but explicit)
+func (d *DatabaseStore) GetShipperByID(shipperID string) (*models.Shipper, error) {
+	return d.GetShipper(shipperID)
+}
+
+// UpdateShipper updates a shipper
+func (d *DatabaseStore) UpdateShipper(shipper *models.Shipper) error {
+	return d.db.Save(shipper).Error
+}
+
+// GetAllShippers returns all shippers
+func (d *DatabaseStore) GetAllShippers() ([]*models.Shipper, error) {
+	var shippers []*models.Shipper
+	err := d.db.Find(&shippers).Error
+	return shippers, err
+}
+
+// UpdateLoad updates a load
+func (d *DatabaseStore) UpdateLoad(load *models.Load) error {
+	return d.db.Save(load).Error
+}
+
+// GetLoadsByStatus returns loads by status
+func (d *DatabaseStore) GetLoadsByStatus(status string) ([]*models.Load, error) {
+	var loads []*models.Load
+	err := d.db.Where("status = ?", status).Find(&loads).Error
+	return loads, err
+}
+
+// GetExpiredLoads returns expired loads
+func (d *DatabaseStore) GetExpiredLoads() ([]*models.Load, error) {
+	return d.GetLoadsByStatus("expired")
+}
+
+// GetBookingsByStatus returns bookings by status
+func (d *DatabaseStore) GetBookingsByStatus(status string) ([]*models.Booking, error) {
+	var bookings []*models.Booking
+	err := d.db.Where("status = ?", status).Find(&bookings).Error
+	return bookings, err
+}
+
+// GetBookingsByPaymentStatus returns bookings by payment status
+func (d *DatabaseStore) GetBookingsByPaymentStatus(paymentStatus string) ([]*models.Booking, error) {
+	var bookings []*models.Booking
+	err := d.db.Where("payment_status = ?", paymentStatus).Find(&bookings).Error
+	return bookings, err
+}
+
+// GetActiveBookings returns all active bookings
+func (d *DatabaseStore) GetActiveBookings() ([]*models.Booking, error) {
+	var bookings []*models.Booking
+	err := d.db.Where("status IN ?", []string{"confirmed", "trucker_assigned", "in_transit"}).Find(&bookings).Error
+	return bookings, err
+}
+
+// GetCompletedBookingsInDateRange returns completed bookings in date range
+func (d *DatabaseStore) GetCompletedBookingsInDateRange(startDate, endDate string) ([]*models.Booking, error) {
+	var bookings []*models.Booking
+	err := d.db.Where("status = ? AND created_at BETWEEN ? AND ?", "delivered", startDate, endDate).Find(&bookings).Error
+	return bookings, err
+}
+
+// DeleteExpiredOTPs deletes expired OTPs
+func (d *DatabaseStore) DeleteExpiredOTPs() error {
+	return d.db.Where("expires_at < ?", time.Now()).Delete(&models.OTP{}).Error
+}
+
+// Analytics operations
+func (d *DatabaseStore) GetTruckerStats(truckerID string) (*models.TruckerStats, error) {
+	var stats models.TruckerStats
+	err := d.db.Where("trucker_id = ?", truckerID).First(&stats).Error
+	if err == gorm.ErrRecordNotFound {
+		// Create new stats if not found
+		stats = models.TruckerStats{
+			TruckerID: truckerID,
+		}
+		// Calculate stats from bookings
+		var bookings []*models.Booking
+		d.db.Where("trucker_id = ? AND status = ?", truckerID, "delivered").Find(&bookings)
+		stats.CompletedTrips = len(bookings)
+		for _, b := range bookings {
+			stats.TotalEarnings += b.NetAmount
+		}
+		d.db.Create(&stats)
+	}
+	return &stats, nil
+}
+
+func (d *DatabaseStore) GetShipperStats(shipperID string) (*models.ShipperStats, error) {
+	var stats models.ShipperStats
+	err := d.db.Where("shipper_id = ?", shipperID).First(&stats).Error
+	if err == gorm.ErrRecordNotFound {
+		// Create new stats if not found
+		stats = models.ShipperStats{
+			ShipperID: shipperID,
+		}
+		// Calculate stats from loads
+		var loads []*models.Load
+		d.db.Where("shipper_id = ?", shipperID).Find(&loads)
+		stats.TotalLoads = len(loads)
+		for _, l := range loads {
+			if l.Status == "available" || l.Status == "booked" {
+				stats.ActiveLoads++
+			} else if l.Status == "delivered" || l.Status == "completed" {
+				stats.CompletedLoads++
+			}
+		}
+		d.db.Create(&stats)
+	}
+	return &stats, nil
+}
+
+func (d *DatabaseStore) GetTruckersWithExpiringDocuments(daysAhead int) ([]*models.Trucker, error) {
+	var truckers []*models.Trucker
+	expiryDate := time.Now().AddDate(0, 0, daysAhead)
+	err := d.db.Where("document_expiry_date <= ? AND document_expiry_date > ?", expiryDate, time.Now()).Find(&truckers).Error
+	return truckers, err
+}
+
+func (d *DatabaseStore) GetInactiveTruckers(daysSinceLastActive int) ([]*models.Trucker, error) {
+	var truckers []*models.Trucker
+	cutoffDate := time.Now().AddDate(0, 0, -daysSinceLastActive)
+	err := d.db.Where("updated_at < ?", cutoffDate).Find(&truckers).Error
+	return truckers, err
+}
+
+func (d *DatabaseStore) GetInactiveShippers(daysSinceLastActive int) ([]*models.Shipper, error) {
+	var shippers []*models.Shipper
+	cutoffDate := time.Now().AddDate(0, 0, -daysSinceLastActive)
+	err := d.db.Where("updated_at < ?", cutoffDate).Find(&shippers).Error
+	return shippers, err
+}
+
+// Support operations
+func (d *DatabaseStore) CreateSupportTicket(ticket *models.SupportTicket) (*models.SupportTicket, error) {
+	if err := d.db.Create(ticket).Error; err != nil {
+		return nil, err
+	}
+	return ticket, nil
+}
+
+func (d *DatabaseStore) GetSupportTicket(ticketID string) (*models.SupportTicket, error) {
+	var ticket models.SupportTicket
+	err := d.db.Where("ticket_id = ?", ticketID).First(&ticket).Error
+	if err != nil {
+		return nil, err
+	}
+	return &ticket, nil
+}
+
+func (d *DatabaseStore) GetSupportTicketsByUser(userPhone string) ([]*models.SupportTicket, error) {
+	var tickets []*models.SupportTicket
+	err := d.db.Where("user_phone = ?", userPhone).Order("created_at DESC").Find(&tickets).Error
+	return tickets, err
+}
+
+func (d *DatabaseStore) UpdateSupportTicket(ticket *models.SupportTicket) error {
+	return d.db.Save(ticket).Error
+}
+
+// Admin operations
+func (d *DatabaseStore) GetPendingVerifications() ([]*models.Verification, error) {
+	var verifications []*models.Verification
+	err := d.db.Where("status = ?", "pending").Find(&verifications).Error
+	return verifications, err
+}
+
+func (d *DatabaseStore) UpdateVerificationStatus(verificationID string, status string, adminNotes string) error {
+	now := time.Now()
+	return d.db.Model(&models.Verification{}).Where("verification_id = ?", verificationID).Updates(map[string]interface{}{
+		"status":      status,
+		"admin_notes": adminNotes,
+		"verified_at": &now,
+	}).Error
+}
+
+func (d *DatabaseStore) SuspendAccount(userType string, userID string, reason string) error {
+	if userType == "trucker" {
+		return d.db.Model(&models.Trucker{}).Where("trucker_id = ?", userID).Update("is_suspended", true).Error
+	} else if userType == "shipper" {
+		return d.db.Model(&models.Shipper{}).Where("shipper_id = ?", userID).Update("active", false).Error
+	}
+	return fmt.Errorf("invalid user type")
+}
+
+func (d *DatabaseStore) ReactivateAccount(userType string, userID string) error {
+	if userType == "trucker" {
+		return d.db.Model(&models.Trucker{}).Where("trucker_id = ?", userID).Update("is_suspended", false).Error
+	} else if userType == "shipper" {
+		return d.db.Model(&models.Shipper{}).Where("shipper_id = ?", userID).Update("active", true).Error
+	}
+	return fmt.Errorf("invalid user type")
+}
+
+// Add this helper method
+func (d *DatabaseStore) GetVerification(verificationID string) (*models.Verification, error) {
+	var verification models.Verification
+	err := d.db.Where("verification_id = ?", verificationID).First(&verification).Error
+	if err != nil {
+		return nil, err
+	}
+	return &verification, nil
 }

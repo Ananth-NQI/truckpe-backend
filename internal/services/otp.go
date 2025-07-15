@@ -8,6 +8,7 @@ import (
 
 	"github.com/Ananth-NQI/truckpe-backend/internal/models"
 	"github.com/Ananth-NQI/truckpe-backend/internal/storage"
+	"github.com/Ananth-NQI/truckpe-backend/internal/utils"
 )
 
 type OTPService struct {
@@ -31,9 +32,10 @@ func (s *OTPService) GenerateSecureOTP() (string, error) {
 
 // CreateOTP creates a new OTP for the given purpose
 func (s *OTPService) CreateOTP(phone, purpose, referenceID string) (*models.OTP, error) {
-	code, err := s.GenerateSecureOTP()
+	// Use the secure OTP generation from utils
+	code, err := utils.GenerateSecureOTP()
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("failed to generate OTP: %w", err)
 	}
 
 	otp := &models.OTP{

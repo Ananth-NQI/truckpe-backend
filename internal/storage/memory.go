@@ -19,6 +19,10 @@ type MemoryStore struct {
 	shippers map[string]*models.Shipper
 	otps     map[string]*models.OTP
 
+	// Add these new fields:
+	supportTickets map[string]*models.SupportTicket
+	verifications  map[string]*models.Verification
+
 	// Maps for lookup by string IDs
 	truckersByTruckerID map[string]*models.Trucker
 	loadsByLoadID       map[string]*models.Load
@@ -46,6 +50,8 @@ func NewMemoryStore() *MemoryStore {
 		truckersByTruckerID: make(map[string]*models.Trucker),
 		loadsByLoadID:       make(map[string]*models.Load),
 		bookingsByBookingID: make(map[string]*models.Booking),
+		supportTickets:      make(map[string]*models.SupportTicket), // Add this
+		verifications:       make(map[string]*models.Verification),  // Add this
 	}
 }
 
@@ -270,7 +276,6 @@ func (m *MemoryStore) CreateBooking(loadID, truckerID string) (*models.Booking, 
 		Status:        models.BookingStatusConfirmed,
 		PaymentStatus: models.PaymentStatusPending,
 		ConfirmedAt:   &now,
-		OTP:           fmt.Sprintf("%06d", time.Now().Unix()%1000000), // Generate 6-digit OTP
 	}
 
 	// Set ID and timestamps
@@ -559,4 +564,411 @@ func (m *MemoryStore) GetOTPByReference(referenceID, purpose string) (*models.OT
 	}
 
 	return nil, fmt.Errorf("OTP not found")
+}
+
+// GetAllTruckers returns all truckers
+func (m *MemoryStore) GetAllTruckers() ([]*models.Trucker, error) {
+	m.truckerMu.RLock()
+	defer m.truckerMu.RUnlock()
+
+	truckers := make([]*models.Trucker, 0, len(m.truckers))
+	for _, trucker := range m.truckers {
+		truckers = append(truckers, trucker)
+	}
+	return truckers, nil
+}
+
+// GetAvailableTruckers returns all available truckers
+func (m *MemoryStore) GetAvailableTruckers() ([]*models.Trucker, error) {
+	m.truckerMu.RLock()
+	defer m.truckerMu.RUnlock()
+
+	var truckers []*models.Trucker
+	for _, trucker := range m.truckers {
+		if trucker.Available && !trucker.IsSuspended {
+			truckers = append(truckers, trucker)
+		}
+	}
+	return truckers, nil
+}
+
+// UpdateTrucker updates a trucker
+func (m *MemoryStore) UpdateTrucker(trucker *models.Trucker) error {
+	m.truckerMu.Lock()
+	defer m.truckerMu.Unlock()
+
+	trucker.UpdatedAt = time.Now()
+	m.truckers[trucker.ID] = trucker
+	m.truckersByTruckerID[trucker.TruckerID] = trucker
+	return nil
+}
+
+// GetTruckerByID returns a trucker by ID (same as GetTrucker)
+func (m *MemoryStore) GetTruckerByID(truckerID string) (*models.Trucker, error) {
+	return m.GetTrucker(truckerID)
+}
+
+// GetShipperByID returns a shipper by ID (same as GetShipper)
+func (m *MemoryStore) GetShipperByID(shipperID string) (*models.Shipper, error) {
+	return m.GetShipper(shipperID)
+}
+
+// UpdateShipper updates a shipper
+func (m *MemoryStore) UpdateShipper(shipper *models.Shipper) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	shipper.UpdatedAt = time.Now()
+	m.shippers[shipper.ShipperID] = shipper
+	return nil
+}
+
+// GetAllShippers returns all shippers
+func (m *MemoryStore) GetAllShippers() ([]*models.Shipper, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	shippers := make([]*models.Shipper, 0, len(m.shippers))
+	for _, shipper := range m.shippers {
+		shippers = append(shippers, shipper)
+	}
+	return shippers, nil
+}
+
+// UpdateLoad updates a load
+func (m *MemoryStore) UpdateLoad(load *models.Load) error {
+	m.loadMu.Lock()
+	defer m.loadMu.Unlock()
+
+	load.UpdatedAt = time.Now()
+	m.loads[load.ID] = load
+	m.loadsByLoadID[load.LoadID] = load
+	return nil
+}
+
+// GetLoadsByStatus returns loads by status
+func (m *MemoryStore) GetLoadsByStatus(status string) ([]*models.Load, error) {
+	m.loadMu.RLock()
+	defer m.loadMu.RUnlock()
+
+	var loads []*models.Load
+	for _, load := range m.loads {
+		if load.Status == status {
+			loads = append(loads, load)
+		}
+	}
+	return loads, nil
+}
+
+// GetExpiredLoads returns expired loads
+func (m *MemoryStore) GetExpiredLoads() ([]*models.Load, error) {
+	return m.GetLoadsByStatus("expired")
+}
+
+// GetBookingsByStatus returns bookings by status
+func (m *MemoryStore) GetBookingsByStatus(status string) ([]*models.Booking, error) {
+	m.bookingMu.RLock()
+	defer m.bookingMu.RUnlock()
+
+	var bookings []*models.Booking
+	for _, booking := range m.bookings {
+		if booking.Status == status {
+			bookings = append(bookings, booking)
+		}
+	}
+	return bookings, nil
+}
+
+// GetBookingsByPaymentStatus returns bookings by payment status
+func (m *MemoryStore) GetBookingsByPaymentStatus(paymentStatus string) ([]*models.Booking, error) {
+	m.bookingMu.RLock()
+	defer m.bookingMu.RUnlock()
+
+	var bookings []*models.Booking
+	for _, booking := range m.bookings {
+		if booking.PaymentStatus == paymentStatus {
+			bookings = append(bookings, booking)
+		}
+	}
+	return bookings, nil
+}
+
+// GetActiveBookings returns all active bookings
+func (m *MemoryStore) GetActiveBookings() ([]*models.Booking, error) {
+	m.bookingMu.RLock()
+	defer m.bookingMu.RUnlock()
+
+	var bookings []*models.Booking
+	activeStatuses := map[string]bool{
+		"confirmed":        true,
+		"trucker_assigned": true,
+		"in_transit":       true,
+	}
+
+	for _, booking := range m.bookings {
+		if activeStatuses[booking.Status] {
+			bookings = append(bookings, booking)
+		}
+	}
+	return bookings, nil
+}
+
+// GetCompletedBookingsInDateRange returns completed bookings in date range
+func (m *MemoryStore) GetCompletedBookingsInDateRange(startDate, endDate string) ([]*models.Booking, error) {
+	m.bookingMu.RLock()
+	defer m.bookingMu.RUnlock()
+
+	start, _ := time.Parse("2006-01-02", startDate)
+	end, _ := time.Parse("2006-01-02", endDate)
+
+	var bookings []*models.Booking
+	for _, booking := range m.bookings {
+		if booking.Status == "delivered" &&
+			booking.CreatedAt.After(start) &&
+			booking.CreatedAt.Before(end.Add(24*time.Hour)) {
+			bookings = append(bookings, booking)
+		}
+	}
+	return bookings, nil
+}
+
+// DeleteExpiredOTPs deletes expired OTPs
+func (m *MemoryStore) DeleteExpiredOTPs() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	now := time.Now()
+	for key, otp := range m.otps {
+		if otp.ExpiresAt.Before(now) {
+			delete(m.otps, key)
+		}
+	}
+	return nil
+}
+
+// Analytics operations - Note: These are stub implementations for memory store
+func (m *MemoryStore) GetTruckerStats(truckerID string) (*models.TruckerStats, error) {
+	// In memory store, we calculate stats on the fly
+	stats := &models.TruckerStats{
+		TruckerID: truckerID,
+	}
+
+	// Calculate from bookings
+	bookings, _ := m.GetBookingsByTrucker(truckerID)
+	for _, b := range bookings {
+		if b.Status == "delivered" {
+			stats.CompletedTrips++
+			stats.TotalEarnings += b.NetAmount
+		}
+	}
+
+	return stats, nil
+}
+
+func (m *MemoryStore) GetShipperStats(shipperID string) (*models.ShipperStats, error) {
+	// In memory store, we calculate stats on the fly
+	stats := &models.ShipperStats{
+		ShipperID: shipperID,
+	}
+
+	// Calculate from loads
+	loads, _ := m.GetLoadsByShipper(shipperID)
+	stats.TotalLoads = len(loads)
+	for _, l := range loads {
+		if l.Status == "available" || l.Status == "booked" {
+			stats.ActiveLoads++
+		} else if l.Status == "delivered" || l.Status == "completed" {
+			stats.CompletedLoads++
+		}
+	}
+
+	return stats, nil
+}
+
+func (m *MemoryStore) GetTruckersWithExpiringDocuments(daysAhead int) ([]*models.Trucker, error) {
+	m.truckerMu.RLock()
+	defer m.truckerMu.RUnlock()
+
+	var truckers []*models.Trucker
+	expiryDate := time.Now().AddDate(0, 0, daysAhead)
+
+	for _, trucker := range m.truckers {
+		if trucker.DocumentExpiryDate != nil &&
+			trucker.DocumentExpiryDate.Before(expiryDate) &&
+			trucker.DocumentExpiryDate.After(time.Now()) {
+			truckers = append(truckers, trucker)
+		}
+	}
+	return truckers, nil
+}
+
+func (m *MemoryStore) GetInactiveTruckers(daysSinceLastActive int) ([]*models.Trucker, error) {
+	m.truckerMu.RLock()
+	defer m.truckerMu.RUnlock()
+
+	var truckers []*models.Trucker
+	cutoffDate := time.Now().AddDate(0, 0, -daysSinceLastActive)
+
+	for _, trucker := range m.truckers {
+		if trucker.UpdatedAt.Before(cutoffDate) {
+			truckers = append(truckers, trucker)
+		}
+	}
+	return truckers, nil
+}
+
+func (m *MemoryStore) GetInactiveShippers(daysSinceLastActive int) ([]*models.Shipper, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var shippers []*models.Shipper
+	cutoffDate := time.Now().AddDate(0, 0, -daysSinceLastActive)
+
+	for _, shipper := range m.shippers {
+		if shipper.UpdatedAt.Before(cutoffDate) {
+			shippers = append(shippers, shipper)
+		}
+	}
+	return shippers, nil
+}
+
+// Support operations
+func (m *MemoryStore) CreateSupportTicket(ticket *models.SupportTicket) (*models.SupportTicket, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ticket.ID = uint(len(m.supportTickets) + 1)
+	if ticket.TicketID == "" {
+		ticket.TicketID = fmt.Sprintf("TK%d", time.Now().Unix())
+	}
+	ticket.CreatedAt = time.Now()
+	ticket.UpdatedAt = time.Now()
+
+	if m.supportTickets == nil {
+		m.supportTickets = make(map[string]*models.SupportTicket)
+	}
+	m.supportTickets[ticket.TicketID] = ticket
+	return ticket, nil
+}
+
+func (m *MemoryStore) GetSupportTicket(ticketID string) (*models.SupportTicket, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if ticket, exists := m.supportTickets[ticketID]; exists {
+		return ticket, nil
+	}
+	return nil, fmt.Errorf("ticket not found")
+}
+
+func (m *MemoryStore) GetSupportTicketsByUser(userPhone string) ([]*models.SupportTicket, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var tickets []*models.SupportTicket
+	for _, ticket := range m.supportTickets {
+		if ticket.UserPhone == userPhone {
+			tickets = append(tickets, ticket)
+		}
+	}
+	return tickets, nil
+}
+
+func (m *MemoryStore) UpdateSupportTicket(ticket *models.SupportTicket) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	ticket.UpdatedAt = time.Now()
+	m.supportTickets[ticket.TicketID] = ticket
+	return nil
+}
+
+// Admin operations
+func (m *MemoryStore) GetPendingVerifications() ([]*models.Verification, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	var verifications []*models.Verification
+	for _, v := range m.verifications {
+		if v.Status == "pending" {
+			verifications = append(verifications, v)
+		}
+	}
+	return verifications, nil
+}
+
+func (m *MemoryStore) UpdateVerificationStatus(verificationID string, status string, adminNotes string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
+	if v, exists := m.verifications[verificationID]; exists {
+		v.Status = status
+		v.AdminNotes = adminNotes
+		now := time.Now()
+		v.VerifiedAt = &now
+		v.UpdatedAt = now
+		return nil
+	}
+	return fmt.Errorf("verification not found")
+}
+
+func (m *MemoryStore) SuspendAccount(userType string, userID string, reason string) error {
+	if userType == "trucker" {
+		m.truckerMu.Lock()
+		defer m.truckerMu.Unlock()
+
+		for _, trucker := range m.truckers {
+			if trucker.TruckerID == userID {
+				trucker.IsSuspended = true
+				trucker.UpdatedAt = time.Now()
+				return nil
+			}
+		}
+	} else if userType == "shipper" {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		if shipper, exists := m.shippers[userID]; exists {
+			shipper.Active = false
+			shipper.UpdatedAt = time.Now()
+			return nil
+		}
+	}
+	return fmt.Errorf("user not found")
+}
+
+func (m *MemoryStore) ReactivateAccount(userType string, userID string) error {
+	if userType == "trucker" {
+		m.truckerMu.Lock()
+		defer m.truckerMu.Unlock()
+
+		for _, trucker := range m.truckers {
+			if trucker.TruckerID == userID {
+				trucker.IsSuspended = false
+				trucker.UpdatedAt = time.Now()
+				return nil
+			}
+		}
+	} else if userType == "shipper" {
+		m.mu.Lock()
+		defer m.mu.Unlock()
+
+		if shipper, exists := m.shippers[userID]; exists {
+			shipper.Active = true
+			shipper.UpdatedAt = time.Now()
+			return nil
+		}
+	}
+	return fmt.Errorf("user not found")
+}
+
+// GetVerification helper method
+func (m *MemoryStore) GetVerification(verificationID string) (*models.Verification, error) {
+	m.mu.RLock()
+	defer m.mu.RUnlock()
+
+	if v, exists := m.verifications[verificationID]; exists {
+		return v, nil
+	}
+	return nil, fmt.Errorf("verification not found")
 }
